@@ -23,6 +23,7 @@ def build_prompt(
     step_results: list[StepExecutionResult],
     max_context_tokens: int,
     response_headroom_tokens: int,
+    blocked_skill_name: str | None = None,
 ) -> PromptBuildResult:
     run_state = {
         "executed_steps": [item.model_dump() for item in step_results],
@@ -47,17 +48,41 @@ def build_prompt(
         "For run_command, params MUST include a shell command in params.command. "
         "If the task is file-analysis, prefer run_command with rg/sed/head/tail commands. "
         "When searching files, exclude noisy directories like .venv, runs, and .git. "
-        "Use ask_user only when truly blocked by missing required input."
+        "Use ask_user only when truly blocked by missing required input. "
+        "Respect RUN_CONSTRAINTS when present; they are mandatory."
     )
+
+    run_constraints: dict[str, Any] = {}
+    if blocked_skill_name:
+        run_constraints = {
+            "blocked_call_skill_targets": [blocked_skill_name],
+            "reason": (
+                "This skill was already handed off in a previous turn without new executable work. "
+                "Do not emit call_skill to this blocked target in this turn."
+            ),
+            "required_behavior": (
+                "Return executable run_command and/or finish actions, "
+                "or choose a different skill only if truly necessary."
+            ),
+        }
 
     prompt = "\n\n".join(
         [
-            instruction,
-            f"TASK:\n{task}",
-            f"RUN_STATE:\n{json.dumps(run_state, ensure_ascii=True)}",
-            f"ALL_SKILL_FRONTMATTER:\n{json.dumps(all_skill_frontmatter, ensure_ascii=True)}",
-            f"CANDIDATE_SKILLS:\n{json.dumps(candidates_payload, ensure_ascii=True)}",
-            f"DISCLOSED_CONTEXT:\n{json.dumps(disclosed_payload, ensure_ascii=True)}",
+            section
+            for section in [
+                instruction,
+                f"TASK:\n{task}",
+                f"RUN_STATE:\n{json.dumps(run_state, ensure_ascii=True)}",
+                (
+                    f"RUN_CONSTRAINTS:\n{json.dumps(run_constraints, ensure_ascii=True)}"
+                    if run_constraints
+                    else ""
+                ),
+                f"ALL_SKILL_FRONTMATTER:\n{json.dumps(all_skill_frontmatter, ensure_ascii=True)}",
+                f"CANDIDATE_SKILLS:\n{json.dumps(candidates_payload, ensure_ascii=True)}",
+                f"DISCLOSED_CONTEXT:\n{json.dumps(disclosed_payload, ensure_ascii=True)}",
+            ]
+            if section
         ]
     )
 

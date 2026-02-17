@@ -54,6 +54,8 @@ class StepExecutionResult(BaseModel):
     stderr_summary: str = ""
     retry_count: int = 0
     status: Literal["success", "failed", "skipped"]
+    stdout_artifact: str | None = None
+    stderr_artifact: str | None = None
 
 
 class LlmRequestMeta(BaseModel):
@@ -98,6 +100,7 @@ class LlmTranscriptRecord(BaseModel):
     required_disclosure_paths: list[str] = Field(default_factory=list)
     response_kind: ResponseKind = "response"
     response_kind_reason: str | None = None
+    finish_summary: str | None = None
     error: str | None = None
     retryable: bool | None = None
 

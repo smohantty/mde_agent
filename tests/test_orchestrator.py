@@ -85,11 +85,19 @@ def test_orchestrator_missing_key_fails_fast(tmp_path: Path, monkeypatch) -> Non
     )
 
 
-def test_normalize_markdown_find_command() -> None:
+def test_normalize_markdown_find_command(monkeypatch) -> None:
+    monkeypatch.setattr(Orchestrator, "_rg_available", staticmethod(lambda: True))
     normalized = Orchestrator._normalize_command("find . -type f -name '*.md' | head -20")
     assert 'rg --files -g "*.md"' in normalized
     assert "!.venv/**" in normalized
     assert "| head -n 20" in normalized
+
+
+def test_normalize_rg_command_without_rg(monkeypatch) -> None:
+    monkeypatch.setattr(Orchestrator, "_rg_available", staticmethod(lambda: False))
+    normalized = Orchestrator._normalize_command('rg --files -g "*.md" -g "!.venv/**"')
+    assert 'find . -type f -name "*.md"' in normalized
+    assert "rg --files" not in normalized
 
 
 def test_orchestrator_writes_transcript_success(tmp_path: Path, monkeypatch) -> None:
@@ -142,6 +150,232 @@ def test_orchestrator_writes_transcript_success(tmp_path: Path, monkeypatch) -> 
     assert "Normalized Action Types (decoder output): finish" in transcript
     assert "Response Kind Mapping:" in transcript
     assert "TASK:" in transcript
+
+
+def test_orchestrator_finish_uses_summary_field(tmp_path: Path, monkeypatch) -> None:
+    skills_dir = tmp_path / "skills"
+    _create_demo_skill(skills_dir)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    def _mock_complete_structured(
+        self,
+        provider: str,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        attempt: int,
+    ) -> LlmResult:
+        return LlmResult(
+            data={
+                "selected_skill": "demo",
+                "reasoning_summary": "Done",
+                "required_disclosure_paths": [],
+                "planned_actions": [
+                    {
+                        "type": "finish",
+                        "params": {"summary": "summary text"},
+                        "expected_output": None,
+                    }
+                ],
+            },
+            meta=LlmRequestMeta(
+                provider="anthropic",
+                model=model,
+                attempt=attempt,
+                latency_ms=7,
+                input_tokens=11,
+                output_tokens=13,
+            ),
+        )
+
+    monkeypatch.setattr(ProviderRouter, "complete_structured", _mock_complete_structured)
+
+    cfg = AgentConfig()
+    cfg.logging.jsonl_dir = str(tmp_path / "runs")
+    cfg.model.provider = "anthropic"
+    result = Orchestrator(cfg).run(task="inventory files", skills_dir=skills_dir)
+    assert result.status == "success"
+    assert result.final_summary_path is not None
+    assert result.final_summary_path.exists()
+    assert "summary text" in result.final_summary_path.read_text(encoding="utf-8")
+
+    events = (
+        Path(cfg.logging.jsonl_dir) / result.run_id / "events.jsonl"
+    ).read_text(encoding="utf-8")
+    assert '"type": "finish"' in events
+    assert '"message": "summary text"' in events
+    assert '"event_type": "run_finished"' in events
+    assert '"final_summary": "summary text"' in events
+    assert '"final_summary_artifact":' in events
+
+    transcript_path = (
+        Path(cfg.logging.jsonl_dir) / result.run_id / cfg.logging.llm_transcript_filename
+    )
+    transcript = transcript_path.read_text(encoding="utf-8")
+    assert "Finish Summary: summary text" in transcript
+
+
+def test_orchestrator_tool_output_is_reused_before_finish(tmp_path: Path, monkeypatch) -> None:
+    skills_dir = tmp_path / "skills"
+    _create_demo_skill(skills_dir)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    calls = {"count": 0}
+
+    def _mock_complete_structured(
+        self,
+        provider: str,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        attempt: int,
+    ) -> LlmResult:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return LlmResult(
+                data={
+                    "selected_skill": "demo",
+                    "reasoning_summary": "collect output first",
+                    "required_disclosure_paths": [],
+                    "planned_actions": [
+                        {
+                            "type": "run_command",
+                            "params": {"command": "printf 'RESULT_TOKEN\\n'"},
+                            "expected_output": None,
+                        }
+                    ],
+                },
+                meta=LlmRequestMeta(
+                    provider="anthropic",
+                    model=model,
+                    attempt=attempt,
+                    latency_ms=7,
+                    input_tokens=11,
+                    output_tokens=13,
+                ),
+            )
+
+        assert "RESULT_TOKEN" in prompt
+        return LlmResult(
+            data={
+                "selected_skill": None,
+                "reasoning_summary": "used tool result",
+                "required_disclosure_paths": [],
+                "planned_actions": [
+                    {
+                        "type": "finish",
+                        "params": {"summary": "Final answer based on RESULT_TOKEN"},
+                        "expected_output": None,
+                    }
+                ],
+            },
+            meta=LlmRequestMeta(
+                provider="anthropic",
+                model=model,
+                attempt=attempt,
+                latency_ms=8,
+                input_tokens=12,
+                output_tokens=14,
+            ),
+        )
+
+    monkeypatch.setattr(ProviderRouter, "complete_structured", _mock_complete_structured)
+
+    cfg = AgentConfig()
+    cfg.logging.jsonl_dir = str(tmp_path / "runs")
+    cfg.model.provider = "anthropic"
+    cfg.runtime.max_turns = 4
+    result = Orchestrator(cfg).run(task="inventory files", skills_dir=skills_dir)
+    assert result.status == "success"
+    assert calls["count"] == 2
+    assert result.final_summary_path is not None
+
+    run_dir = Path(cfg.logging.jsonl_dir) / result.run_id
+    artifacts = sorted((run_dir / "artifacts").glob("*_stdout.txt"))
+    assert artifacts
+    assert "RESULT_TOKEN" in artifacts[0].read_text(encoding="utf-8")
+
+    events = (run_dir / "events.jsonl").read_text(encoding="utf-8")
+    assert '"stdout_artifact":' in events
+    assert '"final_summary": "Final answer based on RESULT_TOKEN"' in events
+
+
+def test_orchestrator_synthesizes_final_answer_from_tool_evidence(
+    tmp_path: Path, monkeypatch
+) -> None:
+    skills_dir = tmp_path / "skills"
+    _create_demo_skill(skills_dir)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    calls = {"count": 0}
+
+    def _mock_complete_structured(
+        self,
+        provider: str,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        attempt: int,
+    ) -> LlmResult:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return LlmResult(
+                data={
+                    "selected_skill": None,
+                    "reasoning_summary": "done in one turn",
+                    "required_disclosure_paths": [],
+                    "planned_actions": [
+                        {
+                            "type": "run_command",
+                            "params": {"command": "printf 'PROJECT_TOKEN\\n'"},
+                            "expected_output": None,
+                        },
+                        {
+                            "type": "finish",
+                            "params": {"summary": "task completed"},
+                            "expected_output": None,
+                        },
+                    ],
+                },
+                meta=LlmRequestMeta(
+                    provider="anthropic",
+                    model=model,
+                    attempt=attempt,
+                    latency_ms=7,
+                    input_tokens=11,
+                    output_tokens=13,
+                ),
+            )
+        assert "TOOL_EVIDENCE" in prompt
+        assert "PROJECT_TOKEN" in prompt
+        return LlmResult(
+            data={"final_answer": "Project summary synthesized from PROJECT_TOKEN evidence."},
+            meta=LlmRequestMeta(
+                provider="anthropic",
+                model=model,
+                attempt=attempt,
+                latency_ms=8,
+                input_tokens=12,
+                output_tokens=14,
+            ),
+        )
+
+    monkeypatch.setattr(ProviderRouter, "complete_structured", _mock_complete_structured)
+
+    cfg = AgentConfig()
+    cfg.logging.jsonl_dir = str(tmp_path / "runs")
+    cfg.model.provider = "anthropic"
+    result = Orchestrator(cfg).run(task="summarize project", skills_dir=skills_dir)
+    assert result.status == "success"
+    assert calls["count"] == 2
+    assert result.final_summary_path is not None
+    final_text = result.final_summary_path.read_text(encoding="utf-8")
+    assert "Project summary synthesized from PROJECT_TOKEN evidence." in final_text
+
+    run_dir = Path(cfg.logging.jsonl_dir) / result.run_id
+    events = (run_dir / "events.jsonl").read_text(encoding="utf-8")
+    assert '"event_type": "final_answer_synthesis_completed"' in events
+    assert '"final_summary": "Project summary synthesized from PROJECT_TOKEN evidence."' in events
 
 
 def test_orchestrator_writes_transcript_retry_attempts(tmp_path: Path, monkeypatch) -> None:
@@ -249,6 +483,7 @@ def test_orchestrator_recovers_from_repeated_self_handoff_loop(tmp_path: Path, m
     skills_dir = tmp_path / "skills"
     _create_demo_skill(skills_dir)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(Orchestrator, "_rg_available", staticmethod(lambda: False))
 
     def _mock_complete_structured(
         self,
@@ -297,6 +532,12 @@ def test_orchestrator_recovers_from_repeated_self_handoff_loop(tmp_path: Path, m
     assert any(
         event["event_type"] == "self_handoff_recovery_applied"
         and "finish" in event["payload"].get("recovery_action_types", [])
+        for event in events
+    )
+    assert any(
+        event["event_type"] == "skill_step_executed"
+        and event["payload"].get("type") == "run_command"
+        and event["payload"].get("status") == "success"
         for event in events
     )
     assert any(event["event_type"] == "run_finished" for event in events)

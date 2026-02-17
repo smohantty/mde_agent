@@ -25,6 +25,7 @@ class LlmTranscriptSink:
         usage = payload.get("usage", {}) or {}
         budget = payload.get("budget", {}) or {}
         retryable = payload.get("retryable")
+        finish_summary = str(payload.get("finish_summary") or "").strip()
         raw_request = str(payload.get("raw_request_text") or payload["prompt_text"])
         prompt_text = str(payload["prompt_text"])
 
@@ -59,6 +60,7 @@ class LlmTranscriptSink:
             f"Retryable: {retryable if retryable is not None else 'n/a'}",
             f"Error: {payload.get('error') or 'none'}",
             f"Response Kind Mapping: {payload.get('response_kind_reason') or 'n/a'}",
+            f"Finish Summary: {finish_summary or 'none'}",
             "",
             "--- Raw Model Request ---",
             raw_request,

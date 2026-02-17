@@ -101,7 +101,14 @@ def run_command(
             step_id = payload.get("step_id")
             step_type = payload.get("type")
             status = payload.get("status")
-            console.print(f"[cyan]step[/cyan] {step_id} type={step_type} status={status}")
+            message = payload.get("message")
+            if message:
+                console.print(
+                    f"[cyan]step[/cyan] {step_id} type={step_type} status={status} "
+                    f"message={message}"
+                )
+            else:
+                console.print(f"[cyan]step[/cyan] {step_id} type={step_type} status={status}")
         elif et == "step_retry_scheduled":
             step_id = payload.get("step_id")
             retry_count = payload.get("retry_count")
@@ -113,7 +120,14 @@ def run_command(
         elif et == "run_failed":
             console.print(f"[red]failed[/red] reason={payload.get('reason')}")
         elif et == "run_finished":
-            console.print(f"[green]finished[/green] turn={payload.get('turn_index')}")
+            final_summary = payload.get("final_summary")
+            if final_summary:
+                console.print(
+                    f"[green]finished[/green] turn={payload.get('turn_index')} "
+                    f"summary={final_summary}"
+                )
+            else:
+                console.print(f"[green]finished[/green] turn={payload.get('turn_index')}")
 
     result = orchestrator.run(
         task=task,
@@ -133,6 +147,8 @@ def run_command(
     console.print(f"Events: {result.events_path}")
     if result.llm_transcript_path is not None:
         console.print(f"LLM Transcript: {result.llm_transcript_path}")
+    if result.final_summary_path is not None:
+        console.print(f"Final Summary: {result.final_summary_path}")
 
 
 @skills_app.command("list")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import time
 import uuid
 from collections.abc import Callable
@@ -15,6 +16,7 @@ from agent.llm.decoder import DecodeError, decode_model_decision, make_finish_de
 from agent.llm.prompt_builder import build_prompt
 from agent.llm.provider_router import ProviderRouter
 from agent.llm.structured_output import normalize_provider_output
+from agent.llm.token_budget import estimate_tokens
 from agent.logging.events import EventBus, EventContext
 from agent.logging.jsonl_sink import JsonlSink
 from agent.logging.redaction import redact_secrets, summarize_text
@@ -48,6 +50,7 @@ class RunResult:
     message: str
     events_path: Path
     llm_transcript_path: Path | None = None
+    final_summary_path: Path | None = None
 
 
 class Orchestrator:
@@ -88,6 +91,17 @@ class Orchestrator:
         return "Mapped to response because no normalized actions were decoded."
 
     @staticmethod
+    def _extract_finish_summary(actions: list[ActionStep]) -> str | None:
+        for action in actions:
+            if action.type != "finish":
+                continue
+            for key in ("message", "summary", "result", "result_summary"):
+                value = action.params.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return None
+
+    @staticmethod
     def _provider_name_for_transcript(provider_name: str) -> ProviderName:
         if provider_name == "gemini":
             return "gemini"
@@ -117,13 +131,38 @@ class Orchestrator:
         """Rewrite noisy markdown discovery commands to safer workspace-scoped rg forms."""
         normalized = command.strip()
         pattern = r"""find\s+\.\s+-type\s+f\s+-name\s+['"]\*\.md['"]"""
-        if re.search(pattern, normalized):
+        if re.search(pattern, normalized) and Orchestrator._rg_available():
             head_match = re.search(r"head\s+-(?:n\s*)?(\d+)", normalized)
             limit = int(head_match.group(1)) if head_match else 20
             return (
                 f'rg --files -g "*.md" -g "!.venv/**" -g "!runs/**" -g "!.git/**" | head -n {limit}'
             )
+        if not Orchestrator._rg_available():
+            normalized = Orchestrator._rewrite_rg_commands_without_rg(normalized)
         return normalized
+
+    @staticmethod
+    def _rg_available() -> bool:
+        return shutil.which("rg") is not None
+
+    @staticmethod
+    def _md_find_command(*, limit: int | None = None) -> str:
+        command = (
+            'find . -type f -name "*.md" '
+            '-not -path "./.venv/*" -not -path "./runs/*" -not -path "./.git/*"'
+        )
+        if limit is not None:
+            command = f"{command} | head -n {limit}"
+        return command
+
+    @staticmethod
+    def _rewrite_rg_commands_without_rg(command: str) -> str:
+        rewritten = command
+        rg_files_pattern = r"""rg\s+--files(?:\s+-g\s+["'][^"']+["'])+"""
+        rewritten = re.sub(rg_files_pattern, Orchestrator._md_find_command(), rewritten)
+        rewritten = rewritten.replace('rg "^#"', 'grep -E "^#"')
+        rewritten = rewritten.replace('rg "^#{1,3} "', 'grep -E "^#{1,3} "')
+        return rewritten
 
     @staticmethod
     def _build_raw_model_request(
@@ -199,22 +238,34 @@ class Orchestrator:
                 return False
         return True
 
-    @staticmethod
-    def _build_self_handoff_recovery_actions(skill: Any | None) -> list[ActionStep]:
+    def _build_self_handoff_recovery_actions(
+        self,
+        skill: Any | None,
+    ) -> list[ActionStep]:
         commands: list[str] = []
-        if skill is not None:
+        if not self._rg_available():
+            commands = [
+                self._md_find_command(limit=50),
+                (
+                    f"f=$({self._md_find_command(limit=1)}); "
+                    'if [ -n "$f" ]; then echo "## $f"; sed -n "1,120p" "$f"; '
+                    'else echo "no markdown files found"; fi'
+                ),
+            ]
+
+        if not commands and skill is not None:
             defaults = getattr(skill.metadata, "default_action_params", {})
             if isinstance(defaults, dict):
                 preferred = [
+                    "generate_summary",
+                    "aggregate_summaries",
+                    "extract_sections",
+                    "extract_key_sections",
+                    "read_file",
+                    "read_file_content",
                     "list_files",
                     "find_markdown_files",
                     "identify_markdown_files",
-                    "read_file",
-                    "read_file_content",
-                    "extract_sections",
-                    "extract_key_sections",
-                    "generate_summary",
-                    "aggregate_summaries",
                 ]
                 ordered = [key for key in preferred if key in defaults]
                 ordered.extend(key for key in defaults if key not in ordered)
@@ -234,6 +285,9 @@ class Orchestrator:
                     if len(commands) >= 2:
                         break
 
+        if commands:
+            commands = [self._normalize_command(command) for command in commands]
+
         actions = [
             ActionStep(
                 type="run_command",
@@ -250,6 +304,138 @@ class Orchestrator:
             )
         )
         return actions
+
+    @staticmethod
+    def _collect_tool_evidence(step_results: list[StepExecutionResult]) -> list[dict[str, str]]:
+        evidence: list[dict[str, str]] = []
+        for result in step_results:
+            if result.status != "success" or not result.stdout_artifact:
+                continue
+            path = Path(result.stdout_artifact)
+            if not path.exists():
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore").strip()
+            if not text:
+                continue
+            evidence.append({"step_id": result.step_id, "stdout": text[:7000]})
+        return evidence
+
+    @staticmethod
+    def _extract_final_answer(raw: dict[str, Any] | str) -> str | None:
+        try:
+            payload = normalize_provider_output(raw)
+        except ValueError:
+            text = str(raw).strip()
+            return text if text else None
+        for key in ("final_answer", "answer", "summary", "final_summary"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    def _synthesize_final_answer(
+        self,
+        *,
+        task: str,
+        preliminary_summary: str | None,
+        step_results: list[StepExecutionResult],
+        provider_router: ProviderRouter,
+        provider_name: str,
+        run_dir: Path,
+        turn_index: int,
+        bus: EventBus,
+    ) -> str | None:
+        evidence = self._collect_tool_evidence(step_results)
+        if not evidence:
+            return None
+
+        prompt = "\n\n".join(
+            [
+                (
+                    "You are generating the final answer for an autonomous agent run. "
+                    "Return ONLY a JSON object with key final_answer."
+                ),
+                (
+                    "final_answer must directly satisfy TASK using TOOL_EVIDENCE. "
+                    "Do not write process/status text like 'completed'."
+                ),
+                f"TASK:\n{task}",
+                (
+                    f"PRELIMINARY_SUMMARY:\n{preliminary_summary}"
+                    if preliminary_summary
+                    else "PRELIMINARY_SUMMARY:\n(none)"
+                ),
+                f"TOOL_EVIDENCE:\n{json.dumps(evidence, ensure_ascii=True)}",
+            ]
+        )
+        write_artifact(
+            run_dir,
+            f"artifacts/final_answer_prompt_turn_{turn_index}.txt",
+            prompt,
+        )
+        bus.emit(
+            "final_answer_synthesis_started",
+            {
+                "turn_index": turn_index,
+                "estimated_input_tokens": estimate_tokens(prompt),
+                "evidence_items": len(evidence),
+            },
+        )
+
+        response_data: dict[str, Any] | str | None = None
+        llm_error: Exception | None = None
+        for attempt in range(1, self.config.runtime.max_llm_retries + 2):
+            try:
+                result = provider_router.complete_structured(
+                    provider=provider_name,
+                    prompt=prompt,
+                    model=self.config.model.name,
+                    max_tokens=min(1400, self.config.model.max_tokens),
+                    attempt=attempt,
+                )
+                response_data = result.data
+                break
+            except Exception as exc:
+                llm_error = exc
+                if is_retryable_error(exc) and attempt <= self.config.runtime.max_llm_retries:
+                    delay = compute_backoff_delay(
+                        attempt=attempt,
+                        base_delay=self.config.runtime.retry_base_delay_seconds,
+                        max_delay=self.config.runtime.retry_max_delay_seconds,
+                    )
+                    time.sleep(min(delay, 0.25))
+                    continue
+                break
+
+        if response_data is None:
+            bus.emit(
+                "final_answer_synthesis_failed",
+                {"turn_index": turn_index, "reason": str(llm_error) if llm_error else "unknown"},
+            )
+            return None
+
+        response_text = self._serialize_response_payload(response_data) or ""
+        write_artifact(
+            run_dir,
+            f"artifacts/final_answer_response_turn_{turn_index}.txt",
+            response_text,
+        )
+        final_answer = self._extract_final_answer(response_data)
+        if not final_answer:
+            bus.emit(
+                "final_answer_synthesis_failed",
+                {"turn_index": turn_index, "reason": "missing_final_answer"},
+            )
+            return None
+        redacted_answer = self._sanitize_and_redact(final_answer) or final_answer
+        bus.emit(
+            "final_answer_synthesis_completed",
+            {
+                "turn_index": turn_index,
+                "summary_preview": summarize_text(redacted_answer, 250),
+            },
+        )
+        return redacted_answer
 
     def _emit_disclosure(
         self,
@@ -296,6 +482,8 @@ class Orchestrator:
         bus: EventBus,
         executor: CommandExecutor,
         retry_policy: str,
+        run_dir: Path,
+        turn_index: int,
     ) -> tuple[list[StepExecutionResult], bool]:
         step_results: list[StepExecutionResult] = []
         should_finish = False
@@ -303,20 +491,33 @@ class Orchestrator:
         for idx, action in enumerate(actions, start=1):
             step_id = f"step-{idx}"
             if action.type == "finish":
+                finish_message = ""
+                for key in ("message", "summary", "result", "result_summary"):
+                    value = action.params.get(key)
+                    if isinstance(value, str) and value.strip():
+                        finish_message = value.strip()
+                        break
                 step_results.append(
                     StepExecutionResult(
                         step_id=step_id,
                         exit_code=0,
-                        stdout_summary="",
+                        stdout_summary=summarize_text(finish_message) if finish_message else "",
                         stderr_summary="",
                         retry_count=0,
                         status="success",
                     )
                 )
                 should_finish = True
+                payload: dict[str, Any] = {
+                    "step_id": step_id,
+                    "type": action.type,
+                    "status": "success",
+                }
+                if finish_message:
+                    payload["message"] = finish_message
                 bus.emit(
                     "skill_step_executed",
-                    {"step_id": step_id, "type": action.type, "status": "success"},
+                    payload,
                 )
                 continue
 
@@ -363,6 +564,18 @@ class Orchestrator:
                     execution = executor.run(normalized_command)
 
                 status = "success" if execution.exit_code == 0 else "failed"
+                stdout_artifact = write_artifact(
+                    run_dir,
+                    f"artifacts/turn_{turn_index}_{step_id}_stdout.txt",
+                    execution.stdout,
+                )
+                stderr_artifact: Path | None = None
+                if execution.stderr:
+                    stderr_artifact = write_artifact(
+                        run_dir,
+                        f"artifacts/turn_{turn_index}_{step_id}_stderr.txt",
+                        execution.stderr,
+                    )
                 result = StepExecutionResult(
                     step_id=step_id,
                     exit_code=execution.exit_code,
@@ -370,6 +583,8 @@ class Orchestrator:
                     stderr_summary=summarize_text(execution.stderr),
                     retry_count=retry_count,
                     status=status,
+                    stdout_artifact=str(stdout_artifact),
+                    stderr_artifact=str(stderr_artifact) if stderr_artifact else None,
                 )
                 step_results.append(result)
                 bus.emit(
@@ -382,6 +597,8 @@ class Orchestrator:
                         "exit_code": execution.exit_code,
                         "stdout": result.stdout_summary,
                         "stderr": result.stderr_summary,
+                        "stdout_artifact": str(stdout_artifact),
+                        "stderr_artifact": str(stderr_artifact) if stderr_artifact else None,
                         "retry_count": retry_count,
                     },
                 )
@@ -614,6 +831,7 @@ class Orchestrator:
 
         accumulated_results: list[StepExecutionResult] = []
         consecutive_self_handoff_turns = 0
+        blocked_self_handoff_skill: str | None = None
         with install_signal_handlers() as signal_state:
             for turn_index in range(1, max_turns + 1):
                 if signal_state.stop_requested:
@@ -634,9 +852,18 @@ class Orchestrator:
                     all_skill_frontmatter=all_skill_frontmatter,
                     disclosed_snippets=disclosed_snippets,
                     step_results=accumulated_results,
+                    blocked_skill_name=blocked_self_handoff_skill,
                     max_context_tokens=self.config.model.max_context_tokens,
                     response_headroom_tokens=self.config.model.response_headroom_tokens,
                 )
+                if blocked_self_handoff_skill:
+                    bus.emit(
+                        "self_handoff_constraint_applied",
+                        {
+                            "turn_index": turn_index,
+                            "blocked_skill": blocked_self_handoff_skill,
+                        },
+                    )
                 bus.emit(
                     "prompt_budget_computed",
                     {
@@ -888,6 +1115,7 @@ class Orchestrator:
                     list[ActionType],
                     [action.type for action in decision.planned_actions],
                 )
+                finish_summary = self._extract_finish_summary(decision.planned_actions)
                 response_kind = self._classify_response_kind(planned_action_types)
                 success_record = LlmTranscriptRecord(
                     turn_index=turn_index,
@@ -911,6 +1139,7 @@ class Orchestrator:
                     response_kind_reason=self._response_kind_reason(
                         response_kind, planned_action_types
                     ),
+                    finish_summary=self._sanitize_and_redact(finish_summary),
                     error=None,
                     retryable=None,
                 )
@@ -929,6 +1158,8 @@ class Orchestrator:
                     bus=bus,
                     executor=executor,
                     retry_policy=self.config.runtime.on_step_failure,
+                    run_dir=run_dir,
+                    turn_index=turn_index,
                 )
                 accumulated_results.extend(step_results)
                 bus.emit(
@@ -945,6 +1176,7 @@ class Orchestrator:
                 )
                 if is_self_handoff_only:
                     consecutive_self_handoff_turns += 1
+                    blocked_self_handoff_skill = decision.selected_skill
                     bus.emit(
                         "self_handoff_detected",
                         {
@@ -955,6 +1187,7 @@ class Orchestrator:
                     )
                 else:
                     consecutive_self_handoff_turns = 0
+                    blocked_self_handoff_skill = None
 
                 if consecutive_self_handoff_turns >= 2:
                     bus.emit(
@@ -989,13 +1222,38 @@ class Orchestrator:
                         )
 
                 if should_finish:
-                    bus.emit("run_finished", {"turn_index": turn_index})
+                    final_summary = finish_summary
+                    synthesized_summary = self._synthesize_final_answer(
+                        task=task,
+                        preliminary_summary=finish_summary,
+                        step_results=step_results,
+                        provider_router=provider_router,
+                        provider_name=provider_name,
+                        run_dir=run_dir,
+                        turn_index=turn_index,
+                        bus=bus,
+                    )
+                    if synthesized_summary:
+                        final_summary = synthesized_summary
+
+                    final_summary_path: Path | None = None
+                    run_finished_payload: dict[str, Any] = {"turn_index": turn_index}
+                    if final_summary:
+                        run_finished_payload["final_summary"] = summarize_text(final_summary, 1000)
+                        final_summary_path = write_artifact(
+                            run_dir,
+                            "final_summary.md",
+                            f"# Final Summary\n\n{final_summary.strip()}\n",
+                        )
+                        run_finished_payload["final_summary_artifact"] = str(final_summary_path)
+                    bus.emit("run_finished", run_finished_payload)
                     return RunResult(
                         run_id=run_id,
                         status="success",
                         message="Run completed",
                         events_path=sink.path,
                         llm_transcript_path=llm_transcript_path,
+                        final_summary_path=final_summary_path,
                     )
 
                 if any(item.status == "failed" for item in step_results):

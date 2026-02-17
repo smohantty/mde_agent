@@ -19,5 +19,6 @@ def create_run_dir(base_dir: Path, run_id: str) -> Path:
 
 def write_artifact(run_dir: Path, filename: str, content: str) -> Path:
     path = run_dir / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return path
