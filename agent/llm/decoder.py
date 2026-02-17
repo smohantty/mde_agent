@@ -25,6 +25,7 @@ _BASE_ACTION_TYPE_ALIASES: dict[str, str] = {
     "complete": "finish",
 }
 
+
 def _normalize_token(value: Any) -> str:
     if value is None:
         return ""
@@ -132,6 +133,7 @@ def _normalize_action_step(
 ) -> dict[str, Any]:
     raw_type_value = (
         step.get("type")
+        or step.get("action_type")
         or step.get("action")
         or step.get("step_type")
         or step.get("operation")
@@ -144,6 +146,8 @@ def _normalize_action_step(
         params = {}
     if step.get("skill_name") and "skill_name" not in params:
         params["skill_name"] = step.get("skill_name")
+    if step.get("skill") and "skill_name" not in params:
+        params["skill_name"] = step.get("skill")
     for key in ("command", "cmd", "shell_command"):
         value = step.get(key)
         if isinstance(value, str) and value.strip() and "command" not in params:

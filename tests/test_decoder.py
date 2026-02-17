@@ -116,3 +116,32 @@ def test_decode_infers_run_command_when_type_missing_but_command_present() -> No
     )
     assert decision.planned_actions[0].type == "run_command"
     assert decision.planned_actions[0].params.get("command") == "echo hello"
+
+
+def test_decode_action_type_finish_preserved() -> None:
+    decision = decode_model_decision(
+        {
+            "selected_skill": None,
+            "reasoning_summary": "direct tool path",
+            "required_disclosure_paths": [],
+            "planned_actions": [
+                {
+                    "action_type": "run_command",
+                    "params": {"command": 'rg --files -g "*.md"'},
+                },
+                {
+                    "action_type": "run_command",
+                    "params": {"command": "echo summarize"},
+                },
+                {
+                    "action_type": "finish",
+                    "params": {"message": "done"},
+                },
+            ],
+        }
+    )
+    assert [action.type for action in decision.planned_actions] == [
+        "run_command",
+        "run_command",
+        "finish",
+    ]
