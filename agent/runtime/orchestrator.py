@@ -147,6 +147,23 @@ class Orchestrator:
         return skill_action_aliases, skill_default_action_params
 
     @staticmethod
+    def _build_prompt_skill_catalog(skills: list[Any]) -> list[dict[str, Any]]:
+        catalog: list[dict[str, Any]] = []
+        for skill in skills:
+            catalog.append(
+                {
+                    "name": skill.metadata.name,
+                    "description": skill.metadata.description,
+                    "version": skill.metadata.version,
+                    "tags": list(skill.metadata.tags),
+                    "allowed_tools": list(skill.metadata.allowed_tools),
+                    "references_index": list(skill.metadata.references_index),
+                    "scripts_index": list(skill.scripts),
+                }
+            )
+        return catalog
+
+    @staticmethod
     def _normalize_command(command: str) -> str:
         """Rewrite noisy markdown discovery commands to safer workspace-scoped rg forms."""
         normalized = command.strip()
@@ -987,7 +1004,7 @@ class Orchestrator:
         registry = SkillRegistry(skills_dir)
         skills = registry.load()
         skill_action_aliases, skill_default_action_params = self._build_decoder_overrides(skills)
-        all_skill_frontmatter = [dict(skill.frontmatter) for skill in skills]
+        all_skill_frontmatter = self._build_prompt_skill_catalog(skills)
         bus.emit(
             "skill_catalog_loaded", {"skills_count": len(skills), "skills_dir": str(skills_dir)}
         )
