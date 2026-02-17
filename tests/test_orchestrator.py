@@ -245,7 +245,7 @@ def test_orchestrator_writes_transcript_decode_failed(tmp_path: Path, monkeypatc
     assert "not-json-response" in transcript
 
 
-def test_orchestrator_fails_on_repeated_self_handoff_loop(tmp_path: Path, monkeypatch) -> None:
+def test_orchestrator_recovers_from_repeated_self_handoff_loop(tmp_path: Path, monkeypatch) -> None:
     skills_dir = tmp_path / "skills"
     _create_demo_skill(skills_dir)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
@@ -288,14 +288,15 @@ def test_orchestrator_fails_on_repeated_self_handoff_loop(tmp_path: Path, monkey
     cfg.model.provider = "anthropic"
     cfg.runtime.max_turns = 4
     result = Orchestrator(cfg).run(task="inventory files", skills_dir=skills_dir)
-    assert result.status == "failed"
-    assert result.message == "Detected repeated self-handoff loop"
+    assert result.status == "success"
+    assert result.message == "Run completed"
 
     events_path = Path(cfg.logging.jsonl_dir) / result.run_id / "events.jsonl"
     events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
     assert any(event["event_type"] == "self_handoff_detected" for event in events)
     assert any(
-        event["event_type"] == "run_failed"
-        and event["payload"].get("reason") == "self_handoff_loop"
+        event["event_type"] == "self_handoff_recovery_applied"
+        and "finish" in event["payload"].get("recovery_action_types", [])
         for event in events
     )
+    assert any(event["event_type"] == "run_finished" for event in events)

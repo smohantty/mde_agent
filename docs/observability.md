@@ -30,6 +30,7 @@ Core events include:
 - `llm_response_received`
 - `llm_decision_decoded`
 - `self_handoff_detected` (loop-safety signal for repeated same-skill handoffs)
+- `self_handoff_recovery_applied` (fallback actions injected to break repeated same-skill handoffs)
 - `skill_step_executed`
 - `run_finished` / `run_failed`
 

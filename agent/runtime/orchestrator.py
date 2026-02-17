@@ -182,6 +182,75 @@ class Orchestrator:
                     break
         return action_types
 
+    @staticmethod
+    def _is_self_handoff_only(
+        *,
+        selected_skill: str | None,
+        actions: list[ActionStep],
+    ) -> bool:
+        selected = (selected_skill or "").strip()
+        if not selected or not actions:
+            return False
+        for action in actions:
+            if action.type != "call_skill":
+                return False
+            target = str(action.params.get("skill_name", selected) or "").strip()
+            if target != selected:
+                return False
+        return True
+
+    @staticmethod
+    def _build_self_handoff_recovery_actions(skill: Any | None) -> list[ActionStep]:
+        commands: list[str] = []
+        if skill is not None:
+            defaults = getattr(skill.metadata, "default_action_params", {})
+            if isinstance(defaults, dict):
+                preferred = [
+                    "list_files",
+                    "find_markdown_files",
+                    "identify_markdown_files",
+                    "read_file",
+                    "read_file_content",
+                    "extract_sections",
+                    "extract_key_sections",
+                    "generate_summary",
+                    "aggregate_summaries",
+                ]
+                ordered = [key for key in preferred if key in defaults]
+                ordered.extend(key for key in defaults if key not in ordered)
+                seen: set[str] = set()
+                for key in ordered:
+                    params = defaults.get(key, {})
+                    if not isinstance(params, dict):
+                        continue
+                    command = params.get("command")
+                    if not isinstance(command, str) or not command.strip():
+                        continue
+                    normalized = command.strip()
+                    if normalized in seen:
+                        continue
+                    seen.add(normalized)
+                    commands.append(normalized)
+                    if len(commands) >= 2:
+                        break
+
+        actions = [
+            ActionStep(
+                type="run_command",
+                params={"command": command},
+                expected_output=f"Recovery command {idx + 1}",
+            )
+            for idx, command in enumerate(commands)
+        ]
+        actions.append(
+            ActionStep(
+                type="finish",
+                params={"message": "Recovered from repeated self-handoff loop."},
+                expected_output=None,
+            )
+        )
+        return actions
+
     def _emit_disclosure(
         self,
         bus: EventBus,
@@ -789,6 +858,32 @@ class Orchestrator:
                 if not decision.planned_actions:
                     decision = make_finish_decision("No actions returned; ending run")
 
+                decoded_self_handoff = self._is_self_handoff_only(
+                    selected_skill=decision.selected_skill,
+                    actions=decision.planned_actions,
+                )
+                if decoded_self_handoff and consecutive_self_handoff_turns >= 1:
+                    target_skill = (
+                        registry.by_name(skills, decision.selected_skill)
+                        if decision.selected_skill
+                        else None
+                    )
+                    recovery_actions = self._build_self_handoff_recovery_actions(target_skill)
+                    decision = decision.model_copy(
+                        update={
+                            "planned_actions": recovery_actions,
+                            "required_disclosure_paths": [],
+                        }
+                    )
+                    bus.emit(
+                        "self_handoff_recovery_applied",
+                        {
+                            "turn_index": turn_index,
+                            "selected_skill": decision.selected_skill,
+                            "recovery_action_types": [item.type for item in recovery_actions],
+                        },
+                    )
+
                 planned_action_types = cast(
                     list[ActionType],
                     [action.type for action in decision.planned_actions],
@@ -844,14 +939,9 @@ class Orchestrator:
                     },
                 )
 
-                is_self_handoff_only = (
-                    bool(decision.planned_actions)
-                    and all(action.type == "call_skill" for action in decision.planned_actions)
-                    and all(
-                        str(action.params.get("skill_name", decision.selected_skill) or "").strip()
-                        == (decision.selected_skill or "")
-                        for action in decision.planned_actions
-                    )
+                is_self_handoff_only = self._is_self_handoff_only(
+                    selected_skill=decision.selected_skill,
+                    actions=decision.planned_actions,
                 )
                 if is_self_handoff_only:
                     consecutive_self_handoff_turns += 1
