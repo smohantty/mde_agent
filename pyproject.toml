@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
 [project]
 name = "autonomous-skill-agent"
 version = "0.1.0"
@@ -25,6 +29,12 @@ dev = [
 
 [project.scripts]
 agent = "agent.cli:main"
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["agent"]
 
 [tool.ruff]
 line-length = 100
