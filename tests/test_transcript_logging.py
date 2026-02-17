@@ -8,8 +8,8 @@ from agent.runtime.orchestrator import Orchestrator
 from agent.types import LlmTranscriptBudget, LlmTranscriptRecord, LlmTranscriptUsage
 
 
-def test_transcript_sink_writes_jsonl(tmp_path: Path) -> None:
-    sink = LlmTranscriptSink(tmp_path / "llm_transcript.jsonl")
+def test_transcript_sink_writes_readable_log(tmp_path: Path) -> None:
+    sink = LlmTranscriptSink(tmp_path / "llm_transcript.log")
     record = LlmTranscriptRecord(
         turn_index=1,
         attempt=1,
@@ -37,8 +37,11 @@ def test_transcript_sink_writes_jsonl(tmp_path: Path) -> None:
     )
     sink.write(record)
     rows = sink.replay()
-    assert rows[0]["status"] == "success"
-    assert rows[0]["provider"] == "anthropic"
+    assert len(rows) == 1
+    assert "Status: success" in rows[0]
+    assert "Provider: anthropic" in rows[0]
+    assert "--- Prompt ---" in rows[0]
+    assert "--- Response ---" in rows[0]
 
 
 def test_transcript_text_is_sanitized_and_redacted() -> None:

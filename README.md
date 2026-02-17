@@ -47,7 +47,7 @@ uv run agent run "Summarize markdown files" --skills-dir demos/basic_demo_skills
 Run output includes both:
 
 - `events.jsonl` (event stream)
-- `llm_transcript.jsonl` (LLM request/response transcript)
+- `llm_transcript.log` (human-readable LLM request/response transcript)
 
 ## Config discovery order
 
@@ -71,7 +71,7 @@ Run output includes both:
 uv run pytest
 ```
 
-Replay transcript summary:
+Replay LLM transcript:
 
 ```bash
 uv run agent replay <run_id> --llm-transcript

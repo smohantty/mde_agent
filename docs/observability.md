@@ -6,7 +6,7 @@ Each run writes JSONL events to:
 
 LLM communication transcript (request/response context + decode summary) is written to:
 
-`<logging.jsonl_dir>/<run_id>/llm_transcript.jsonl`
+`<logging.jsonl_dir>/<run_id>/llm_transcript.log`
 
 Replay a run:
 
@@ -14,7 +14,7 @@ Replay a run:
 uv run agent replay <run_id> --event-stream
 ```
 
-Replay concise LLM transcript entries:
+Replay readable LLM transcript entries:
 
 ```bash
 uv run agent replay <run_id> --llm-transcript
@@ -32,11 +32,11 @@ Core events include:
 - `skill_step_executed`
 - `run_finished` / `run_failed`
 
-Transcript rows include:
+Transcript entries include:
 
 - full prompt/response bodies (sanitized + redacted)
 - provider/model/attempt metadata
 - token usage and latency
 - decoded action types
 - response classification (`skill_call`, `tool_call`, `response`)
-- user-focused rows (no run/trace/span/timestamp/hash headers; those remain in `events.jsonl`)
+- user-focused plain-text blocks (no run/trace/span/timestamp/hash headers; those remain in `events.jsonl`)

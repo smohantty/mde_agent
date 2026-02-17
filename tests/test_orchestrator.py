@@ -88,7 +88,7 @@ def test_orchestrator_missing_key_fails_fast(tmp_path: Path, monkeypatch) -> Non
 def test_normalize_markdown_find_command() -> None:
     normalized = Orchestrator._normalize_command("find . -type f -name '*.md' | head -20")
     assert 'rg --files -g "*.md"' in normalized
-    assert '!.venv/**' in normalized
+    assert "!.venv/**" in normalized
     assert "| head -n 20" in normalized
 
 
@@ -133,13 +133,13 @@ def test_orchestrator_writes_transcript_success(tmp_path: Path, monkeypatch) -> 
     transcript_path = (
         Path(cfg.logging.jsonl_dir) / result.run_id / cfg.logging.llm_transcript_filename
     )
-    rows = [json.loads(line) for line in transcript_path.read_text(encoding="utf-8").splitlines()]
-    assert len(rows) == 1
-    assert rows[0]["status"] == "success"
-    assert rows[0]["decode_success"] is True
-    assert rows[0]["response_kind"] == "response"
-    assert rows[0]["planned_action_types"] == ["finish"]
-    assert "TASK:" in rows[0]["prompt_text"]
+    transcript = transcript_path.read_text(encoding="utf-8")
+    assert transcript.count("=== LLM ATTEMPT START ===") == 1
+    assert "Status: success" in transcript
+    assert "Decode Success: yes" in transcript
+    assert "Response Kind: response" in transcript
+    assert "Planned Action Types: finish" in transcript
+    assert "TASK:" in transcript
 
 
 def test_orchestrator_writes_transcript_retry_attempts(tmp_path: Path, monkeypatch) -> None:
@@ -192,11 +192,11 @@ def test_orchestrator_writes_transcript_retry_attempts(tmp_path: Path, monkeypat
     transcript_path = (
         Path(cfg.logging.jsonl_dir) / result.run_id / cfg.logging.llm_transcript_filename
     )
-    rows = [json.loads(line) for line in transcript_path.read_text(encoding="utf-8").splitlines()]
-    assert len(rows) == 2
-    assert rows[0]["status"] == "request_failed"
-    assert rows[0]["retryable"] is True
-    assert rows[1]["status"] == "success"
+    transcript = transcript_path.read_text(encoding="utf-8")
+    assert transcript.count("=== LLM ATTEMPT START ===") == 2
+    assert "Status: request_failed" in transcript
+    assert "Retryable: True" in transcript
+    assert "Status: success" in transcript
 
 
 def test_orchestrator_writes_transcript_decode_failed(tmp_path: Path, monkeypatch) -> None:
@@ -236,8 +236,8 @@ def test_orchestrator_writes_transcript_decode_failed(tmp_path: Path, monkeypatc
     transcript_path = (
         Path(cfg.logging.jsonl_dir) / result.run_id / cfg.logging.llm_transcript_filename
     )
-    rows = [json.loads(line) for line in transcript_path.read_text(encoding="utf-8").splitlines()]
-    assert len(rows) == 1
-    assert rows[0]["status"] == "decode_failed"
-    assert rows[0]["decode_success"] is False
-    assert "not-json-response" in str(rows[0]["response_text"])
+    transcript = transcript_path.read_text(encoding="utf-8")
+    assert transcript.count("=== LLM ATTEMPT START ===") == 1
+    assert "Status: decode_failed" in transcript
+    assert "Decode Success: no" in transcript
+    assert "not-json-response" in transcript

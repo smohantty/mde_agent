@@ -91,8 +91,7 @@ def run_command(
             latency_ms = meta.get("latency_ms")
             output_tokens = meta.get("output_tokens")
             console.print(
-                f"[cyan]llm[/cyan] response latency_ms={latency_ms} "
-                f"output_tokens={output_tokens}"
+                f"[cyan]llm[/cyan] response latency_ms={latency_ms} output_tokens={output_tokens}"
             )
         elif et == "llm_decision_decoded":
             turn = payload.get("turn_index")
@@ -185,7 +184,7 @@ def replay_command(
     run_id: Annotated[str, typer.Argument(help="Run ID")],
     event_stream: Annotated[bool, typer.Option(help="Replay events as a stream")] = True,
     llm_transcript: Annotated[
-        bool, typer.Option(help="Replay concise LLM transcript entries")
+        bool, typer.Option(help="Replay readable LLM transcript entries")
     ] = False,
     config: Annotated[Path | None, typer.Option(help="Path to config file")] = None,
 ) -> None:
@@ -211,20 +210,8 @@ def replay_command(
         if not transcript_path.exists():
             console.print(f"LLM transcript file not found: {transcript_path}")
             raise typer.Exit(code=1)
-
-        transcript_lines = transcript_path.read_text(encoding="utf-8").splitlines()
-        for line in transcript_lines:
-            record = json.loads(line)
-            usage = record.get("usage", {})
-            action_types = ",".join(record.get("planned_action_types", []))
-            console.print(
-                f"llm turn={record['turn_index']} "
-                f"attempt={record['attempt']} provider={record['provider']} "
-                f"model={record['model']} status={record['status']} "
-                f"kind={record['response_kind']} skill={record.get('selected_skill')} "
-                f"actions={action_types} latency_ms={usage.get('latency_ms')} "
-                f"in={usage.get('input_tokens')} out={usage.get('output_tokens')}"
-            )
+        transcript_text = transcript_path.read_text(encoding="utf-8")
+        console.print(transcript_text.rstrip())
 
 
 @config_app.command("init")

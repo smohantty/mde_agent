@@ -61,7 +61,7 @@ class LoggingConfig(BaseModel):
     sanitize_control_chars: bool = True
     redact_secrets: bool = True
     llm_transcript_enabled: bool = True
-    llm_transcript_filename: str = "llm_transcript.jsonl"
+    llm_transcript_filename: str = "llm_transcript.log"
 
 
 class AgentConfig(BaseModel):
