@@ -15,6 +15,8 @@ class SkillMetadata(BaseModel):
     version: str = "0.1.0"
     allowed_tools: list[str] = Field(default_factory=list)
     references_index: list[str] = Field(default_factory=list)
+    action_aliases: dict[str, str] = Field(default_factory=dict)
+    default_action_params: dict[str, dict[str, Any]] = Field(default_factory=dict)
 
 
 class SkillCandidate(BaseModel):

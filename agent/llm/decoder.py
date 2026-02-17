@@ -12,76 +12,124 @@ class DecodeError(RuntimeError):
     pass
 
 
-_ACTION_TYPE_ALIASES: dict[str, str] = {
+_BASE_ACTION_TYPE_ALIASES: dict[str, str] = {
     "execute_skill": "call_skill",
     "invoke_skill": "call_skill",
     "use_skill": "call_skill",
     "run": "run_command",
     "run_shell": "run_command",
     "execute_command": "run_command",
-    "list_files": "run_command",
-    "find_markdown_files": "run_command",
-    "identify_markdown_files": "run_command",
-    "read_file": "run_command",
-    "read_file_content": "run_command",
-    "extract_sections": "run_command",
-    "extract_key_sections": "run_command",
-    "generate_summary": "run_command",
-    "aggregate_summaries": "run_command",
     "request_disclosure": "ask_user",
     "format_output": "finish",
     "summarize_output": "finish",
     "complete": "finish",
 }
 
-_LIST_MARKDOWN_COMMAND = (
-    'rg --files -g "*.md" -g "!.venv/**" -g "!runs/**" -g "!.git/**"'
-)
-
-_DEFAULT_COMMAND_BY_ACTION: dict[str, str] = {
-    "list_files": _LIST_MARKDOWN_COMMAND,
-    "find_markdown_files": _LIST_MARKDOWN_COMMAND,
-    "identify_markdown_files": _LIST_MARKDOWN_COMMAND,
-    "read_file": (
-        f'f=$({_LIST_MARKDOWN_COMMAND} | head -n 1); '
-        'if [ -n "$f" ]; then echo "## $f"; sed -n "1,120p" "$f"; '
-        'else echo "no markdown files found"; fi'
-    ),
-    "read_file_content": (
-        f'f=$({_LIST_MARKDOWN_COMMAND} | head -n 1); '
-        'if [ -n "$f" ]; then echo "## $f"; sed -n "1,120p" "$f"; '
-        'else echo "no markdown files found"; fi'
-    ),
-    "extract_sections": (
-        f'f=$({_LIST_MARKDOWN_COMMAND} | head -n 1); '
-        'if [ -n "$f" ]; then echo "## $f"; echo "-- START --"; sed -n "1,40p" "$f"; '
-        'echo "-- END --"; tail -n 40 "$f"; else echo "no markdown files found"; fi'
-    ),
-    "extract_key_sections": (
-        f'f=$({_LIST_MARKDOWN_COMMAND} | head -n 1); '
-        'if [ -n "$f" ]; then echo "## $f"; echo "-- START --"; sed -n "1,40p" "$f"; '
-        'echo "-- END --"; tail -n 40 "$f"; else echo "no markdown files found"; fi'
-    ),
-    "generate_summary": (
-        f'for f in $({_LIST_MARKDOWN_COMMAND} | head -n 10); do '
-        'echo "## $f"; '
-        'echo "line_count: $(wc -l < "$f")"; '
-        'echo "headings:"; rg "^#" "$f" | head -n 5; '
-        'echo; '
-        "done"
-    ),
-    "aggregate_summaries": (
-        f'for f in $({_LIST_MARKDOWN_COMMAND} | head -n 10); do '
-        'echo "## $f"; '
-        'echo "line_count: $(wc -l < "$f")"; '
-        'echo "headings:"; rg "^#" "$f" | head -n 5; '
-        'echo; '
-        "done"
-    ),
-}
+def _normalize_token(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().lower()
 
 
-def _normalize_action_step(step: dict[str, Any], selected_skill: str | None) -> dict[str, Any]:
+def _normalize_skill_aliases(
+    skill_action_aliases: dict[str, dict[str, str]] | None,
+) -> dict[str, dict[str, str]]:
+    normalized: dict[str, dict[str, str]] = {}
+    if not skill_action_aliases:
+        return normalized
+
+    for skill_name, aliases in skill_action_aliases.items():
+        skill_key = _normalize_token(skill_name)
+        if not skill_key:
+            continue
+        normalized_aliases: dict[str, str] = {}
+        for raw_action, canonical_action in aliases.items():
+            raw_key = _normalize_token(raw_action)
+            canonical_key = _normalize_token(canonical_action)
+            if not raw_key or not canonical_key:
+                continue
+            normalized_aliases[raw_key] = canonical_key
+        if normalized_aliases:
+            normalized[skill_key] = normalized_aliases
+    return normalized
+
+
+def _normalize_default_action_params(
+    skill_default_action_params: dict[str, dict[str, dict[str, Any]]] | None,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    normalized: dict[str, dict[str, dict[str, Any]]] = {}
+    if not skill_default_action_params:
+        return normalized
+
+    for skill_name, action_map in skill_default_action_params.items():
+        skill_key = _normalize_token(skill_name)
+        if not skill_key:
+            continue
+        normalized_action_map: dict[str, dict[str, Any]] = {}
+        for action_name, params in action_map.items():
+            action_key = _normalize_token(action_name)
+            if not action_key:
+                continue
+            normalized_action_map[action_key] = {str(key): value for key, value in params.items()}
+        if normalized_action_map:
+            normalized[skill_key] = normalized_action_map
+    return normalized
+
+
+def _resolve_action_type(
+    raw_type: str,
+    selected_skill: str | None,
+    skill_aliases: dict[str, dict[str, str]],
+) -> str:
+    raw_key = _normalize_token(raw_type)
+    if not raw_key:
+        return ""
+
+    selected_skill_key = _normalize_token(selected_skill)
+    if selected_skill_key:
+        alias = skill_aliases.get(selected_skill_key, {}).get(raw_key)
+        if alias:
+            return alias
+
+    for alias_map in skill_aliases.values():
+        alias = alias_map.get(raw_key)
+        if alias:
+            return alias
+
+    return _BASE_ACTION_TYPE_ALIASES.get(raw_key, raw_key)
+
+
+def _resolve_default_params(
+    raw_type: str,
+    normalized_type: str,
+    selected_skill: str | None,
+    skill_default_action_params: dict[str, dict[str, dict[str, Any]]],
+) -> dict[str, Any] | None:
+    selected_skill_key = _normalize_token(selected_skill)
+    candidate_keys = [_normalize_token(raw_type), _normalize_token(normalized_type)]
+
+    if selected_skill_key:
+        action_map = skill_default_action_params.get(selected_skill_key, {})
+        for action_key in candidate_keys:
+            params = action_map.get(action_key)
+            if params is not None:
+                return dict(params)
+
+    for action_map in skill_default_action_params.values():
+        for action_key in candidate_keys:
+            params = action_map.get(action_key)
+            if params is not None:
+                return dict(params)
+
+    return None
+
+
+def _normalize_action_step(
+    step: dict[str, Any],
+    selected_skill: str | None,
+    skill_aliases: dict[str, dict[str, str]],
+    skill_default_action_params: dict[str, dict[str, dict[str, Any]]],
+) -> dict[str, Any]:
     raw_type_value = (
         step.get("type")
         or step.get("action")
@@ -90,7 +138,7 @@ def _normalize_action_step(step: dict[str, Any], selected_skill: str | None) -> 
         or ""
     )
     raw_type = str(raw_type_value).strip()
-    normalized_type = _ACTION_TYPE_ALIASES.get(raw_type, raw_type)
+    normalized_type = _resolve_action_type(raw_type, selected_skill, skill_aliases)
     params = step.get("params")
     if not isinstance(params, dict):
         params = {}
@@ -118,21 +166,38 @@ def _normalize_action_step(step: dict[str, Any], selected_skill: str | None) -> 
         if not normalized_step["params"].get("skill_name") and selected_skill:
             normalized_step["params"]["skill_name"] = selected_skill
     elif normalized_type == "run_command":
+        default_params = _resolve_default_params(
+            raw_type=raw_type,
+            normalized_type=normalized_type,
+            selected_skill=selected_skill,
+            skill_default_action_params=skill_default_action_params,
+        )
+        if default_params:
+            merged = dict(default_params)
+            merged.update(normalized_step["params"])
+            normalized_step["params"] = merged
         command = normalized_step["params"].get("command")
-        if not command and raw_type in _DEFAULT_COMMAND_BY_ACTION:
-            normalized_step["params"]["command"] = _DEFAULT_COMMAND_BY_ACTION[raw_type]
-        elif not command:
+        if not command:
             # Unknown command-oriented action without command content is not executable.
             normalized_step["type"] = "ask_user"
-            normalized_step["params"] = {"message": f"Non-executable action: {raw_type}"}
+            action_label = raw_type or normalized_type or "unknown"
+            normalized_step["params"] = {"message": f"Non-executable action: {action_label}"}
     elif normalized_type not in {"ask_user", "finish"}:
         normalized_step["type"] = "ask_user"
-        normalized_step["params"] = {"message": f"Unsupported action type: {raw_type}"}
+        action_label = raw_type or "unknown"
+        normalized_step["params"] = {"message": f"Unsupported action type: {action_label}"}
 
     return normalized_step
 
 
-def _repair_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def _repair_payload(
+    payload: dict[str, Any],
+    skill_action_aliases: dict[str, dict[str, str]] | None = None,
+    skill_default_action_params: dict[str, dict[str, dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    normalized_skill_aliases = _normalize_skill_aliases(skill_action_aliases)
+    normalized_skill_defaults = _normalize_default_action_params(skill_default_action_params)
+
     repaired = dict(payload)
     if "planned_actions" not in repaired:
         repaired["planned_actions"] = [{"type": "finish", "params": {}, "expected_output": None}]
@@ -142,10 +207,19 @@ def _repair_payload(payload: dict[str, Any]) -> dict[str, Any]:
         repaired["required_disclosure_paths"] = []
 
     selected_skill = repaired.get("selected_skill")
+    if selected_skill is not None:
+        selected_skill = str(selected_skill).strip() or None
+        repaired["selected_skill"] = selected_skill
+
     actions = repaired.get("planned_actions")
     if isinstance(actions, list):
         normalized_actions = [
-            _normalize_action_step(step, selected_skill)
+            _normalize_action_step(
+                step,
+                selected_skill,
+                normalized_skill_aliases,
+                normalized_skill_defaults,
+            )
             for step in actions
             if isinstance(step, dict)
         ]
@@ -156,9 +230,18 @@ def _repair_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return repaired
 
 
-def decode_model_decision(raw: dict[str, Any] | str) -> ModelDecision:
+def decode_model_decision(
+    raw: dict[str, Any] | str,
+    *,
+    skill_action_aliases: dict[str, dict[str, str]] | None = None,
+    skill_default_action_params: dict[str, dict[str, dict[str, Any]]] | None = None,
+) -> ModelDecision:
     payload = normalize_provider_output(raw)
-    payload = _repair_payload(payload)
+    payload = _repair_payload(
+        payload,
+        skill_action_aliases=skill_action_aliases,
+        skill_default_action_params=skill_default_action_params,
+    )
     try:
         return ModelDecision.model_validate(payload)
     except ValidationError as exc:

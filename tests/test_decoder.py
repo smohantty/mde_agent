@@ -42,49 +42,29 @@ def test_decode_normalizes_execute_skill_action() -> None:
     assert decision.planned_actions[0].params.get("skill_name") == "content-summarizer"
 
 
-def test_decode_normalizes_identify_markdown_files_to_command() -> None:
-    decision = decode_model_decision(
-        {
-            "selected_skill": "content-summarizer",
-            "reasoning_summary": "find markdown",
-            "required_disclosure_paths": [],
-            "planned_actions": [
-                {"type": "identify_markdown_files", "params": {}, "expected_output": None}
-            ],
-        }
-    )
-    assert decision.planned_actions[0].type == "run_command"
-    command = str(decision.planned_actions[0].params.get("command"))
-    assert 'rg --files -g "*.md"' in command
-    assert '!.venv/**' in command
-
-
-def test_decode_normalizes_list_files_to_command() -> None:
+def test_decode_uses_skill_action_aliases_and_defaults() -> None:
     decision = decode_model_decision(
         {
             "selected_skill": "content-summarizer",
             "reasoning_summary": "find files",
             "required_disclosure_paths": [],
             "planned_actions": [{"type": "list_files", "params": {}, "expected_output": None}],
-        }
+        },
+        skill_action_aliases={
+            "content-summarizer": {
+                "list_files": "run_command",
+            }
+        },
+        skill_default_action_params={
+            "content-summarizer": {
+                "list_files": {
+                    "command": 'rg --files -g "*.md"',
+                }
+            }
+        },
     )
     assert decision.planned_actions[0].type == "run_command"
-    command = str(decision.planned_actions[0].params.get("command"))
-    assert 'rg --files -g "*.md"' in command
-    assert '!.venv/**' in command
-
-
-def test_decode_normalizes_read_file_to_command() -> None:
-    decision = decode_model_decision(
-        {
-            "selected_skill": "content-summarizer",
-            "reasoning_summary": "read markdown file",
-            "required_disclosure_paths": [],
-            "planned_actions": [{"type": "read_file", "params": {}, "expected_output": None}],
-        }
-    )
-    assert decision.planned_actions[0].type == "run_command"
-    assert "sed -n" in str(decision.planned_actions[0].params.get("command"))
+    assert decision.planned_actions[0].params.get("command") == 'rg --files -g "*.md"'
 
 
 def test_decode_uses_action_key_when_type_missing() -> None:
@@ -94,9 +74,35 @@ def test_decode_uses_action_key_when_type_missing() -> None:
             "reasoning_summary": "use action key",
             "required_disclosure_paths": [],
             "planned_actions": [{"action": "list_files", "params": {}}],
-        }
+        },
+        skill_action_aliases={
+            "content-summarizer": {
+                "list_files": "run_command",
+            }
+        },
+        skill_default_action_params={
+            "content-summarizer": {
+                "list_files": {
+                    "command": "echo listed",
+                }
+            },
+        },
     )
     assert decision.planned_actions[0].type == "run_command"
+    assert decision.planned_actions[0].params.get("command") == "echo listed"
+
+
+def test_decode_unknown_action_without_defaults_demotes_to_ask_user() -> None:
+    decision = decode_model_decision(
+        {
+            "selected_skill": "content-summarizer",
+            "reasoning_summary": "unsupported action",
+            "required_disclosure_paths": [],
+            "planned_actions": [{"type": "list_files", "params": {}, "expected_output": None}],
+        }
+    )
+    assert decision.planned_actions[0].type == "ask_user"
+    assert "Unsupported action type" in str(decision.planned_actions[0].params.get("message"))
 
 
 def test_decode_infers_run_command_when_type_missing_but_command_present() -> None:

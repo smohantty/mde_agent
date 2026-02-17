@@ -14,6 +14,24 @@ def test_parse_skill_success(make_skill) -> None:
     assert parsed.references
 
 
+def test_parse_skill_action_aliases_and_defaults(make_skill) -> None:
+    skill_dir = make_skill(
+        "skill2",
+        "skill-two",
+        "Skill with action mappings",
+        extra_frontmatter=[
+            "action_aliases:",
+            "  list_files: run_command",
+            "default_action_params:",
+            "  list_files:",
+            "    command: rg --files",
+        ],
+    )
+    parsed = parse_skill(skill_dir)
+    assert parsed.metadata.action_aliases["list_files"] == "run_command"
+    assert parsed.metadata.default_action_params["list_files"]["command"] == "rg --files"
+
+
 def test_parse_skill_missing_description(tmp_path: Path) -> None:
     skill_dir = tmp_path / "bad"
     skill_dir.mkdir(parents=True)

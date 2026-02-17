@@ -15,6 +15,7 @@ def make_skill(tmp_path: Path):
         name: str,
         description: str,
         extra_body: str = "",
+        extra_frontmatter: list[str] | None = None,
     ) -> Path:
         skill_dir = tmp_path / folder
         (skill_dir / "references").mkdir(parents=True, exist_ok=True)
@@ -23,6 +24,7 @@ def make_skill(tmp_path: Path):
         (skill_dir / "scripts" / "run.sh").write_text(
             "#!/usr/bin/env bash\necho hi\n", encoding="utf-8"
         )
+        frontmatter_extra = extra_frontmatter or []
         (skill_dir / "SKILL.md").write_text(
             "\n".join(
                 [
@@ -32,6 +34,7 @@ def make_skill(tmp_path: Path):
                     "version: 0.1.0",
                     "tags: [demo, test]",
                     "allowed_tools: [run_command]",
+                    *frontmatter_extra,
                     "---",
                     "",
                     "# Purpose",

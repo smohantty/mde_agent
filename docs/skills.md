@@ -17,3 +17,18 @@ The orchestrator uses progressive disclosure:
 2. Stage 1: summary sections
 3. Stage 2: requested references
 4. Stage 3: script descriptors
+
+Optional frontmatter keys for action normalization:
+
+- `action_aliases`: map provider/model-specific action names to canonical actions (`run_command`, `call_skill`, `ask_user`, `finish`).
+- `default_action_params`: map action names to default `params` payloads used when the model omits required fields.
+
+Example:
+
+```yaml
+action_aliases:
+  list_files: run_command
+default_action_params:
+  list_files:
+    command: rg --files
+```

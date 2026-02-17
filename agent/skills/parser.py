@@ -84,6 +84,20 @@ def parse_skill(skill_dir: Path) -> SkillDefinition:
     allowed_tools = (
         [str(item) for item in allowed_tools_raw] if isinstance(allowed_tools_raw, list) else []
     )
+    action_aliases_raw = frontmatter.get("action_aliases", {})
+    action_aliases = (
+        {str(key): str(value) for key, value in action_aliases_raw.items()}
+        if isinstance(action_aliases_raw, dict)
+        else {}
+    )
+    default_action_params_raw = frontmatter.get("default_action_params", {})
+    default_action_params: dict[str, dict[str, Any]] = {}
+    if isinstance(default_action_params_raw, dict):
+        for key, value in default_action_params_raw.items():
+            if isinstance(value, dict):
+                default_action_params[str(key)] = {
+                    str(p_key): p_val for p_key, p_val in value.items()
+                }
     version = str(frontmatter.get("version", "0.1.0"))
 
     references = _index_relative_files(skill_dir / "references")
@@ -96,6 +110,8 @@ def parse_skill(skill_dir: Path) -> SkillDefinition:
         version=version,
         allowed_tools=allowed_tools,
         references_index=references,
+        action_aliases=action_aliases,
+        default_action_params=default_action_params,
     )
 
     return SkillDefinition(

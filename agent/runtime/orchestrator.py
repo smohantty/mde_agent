@@ -39,6 +39,25 @@ class Orchestrator:
         self.config = config
 
     @staticmethod
+    def _build_decoder_overrides(
+        skills: list[Any],
+    ) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, dict[str, Any]]]]:
+        skill_action_aliases: dict[str, dict[str, str]] = {}
+        skill_default_action_params: dict[str, dict[str, dict[str, Any]]] = {}
+        for skill in skills:
+            metadata = skill.metadata
+            skill_name = metadata.name
+            if metadata.action_aliases:
+                skill_action_aliases[skill_name] = dict(metadata.action_aliases)
+            if metadata.default_action_params:
+                skill_default_action_params[skill_name] = {
+                    action: dict(params)
+                    for action, params in metadata.default_action_params.items()
+                    if isinstance(params, dict)
+                }
+        return skill_action_aliases, skill_default_action_params
+
+    @staticmethod
     def _normalize_command(command: str) -> str:
         """Rewrite noisy markdown discovery commands to safer workspace-scoped rg forms."""
         normalized = command.strip()
@@ -249,6 +268,7 @@ class Orchestrator:
 
         registry = SkillRegistry(skills_dir)
         skills = registry.load()
+        skill_action_aliases, skill_default_action_params = self._build_decoder_overrides(skills)
         bus.emit(
             "skill_catalog_loaded", {"skills_count": len(skills), "skills_dir": str(skills_dir)}
         )
@@ -486,7 +506,11 @@ class Orchestrator:
 
                 decision: ModelDecision
                 try:
-                    decision = decode_model_decision(llm_response_data)
+                    decision = decode_model_decision(
+                        llm_response_data,
+                        skill_action_aliases=skill_action_aliases,
+                        skill_default_action_params=skill_default_action_params,
+                    )
                 except DecodeError as exc:
                     bus.emit("run_failed", {"reason": "decode_failed", "error": str(exc)})
                     return RunResult(
