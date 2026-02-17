@@ -23,3 +23,5 @@ uv run agent config validate --file agent.yaml
 - `skills.prefilter_min_score`: rapidfuzz score threshold (0-100)
 - `logging.jsonl_dir`: run output directory
 - `logging.run_id_pattern`: human-readable run-id format
+- `logging.llm_transcript_enabled`: enable per-run LLM transcript logging
+- `logging.llm_transcript_filename`: transcript filename under each run directory

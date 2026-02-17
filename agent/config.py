@@ -60,6 +60,8 @@ class LoggingConfig(BaseModel):
     debug_llm_bodies: bool = False
     sanitize_control_chars: bool = True
     redact_secrets: bool = True
+    llm_transcript_enabled: bool = True
+    llm_transcript_filename: str = "llm_transcript.jsonl"
 
 
 class AgentConfig(BaseModel):

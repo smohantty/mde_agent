@@ -44,6 +44,11 @@ uv run agent run "Summarize markdown files" --skills-dir demos/basic_demo_skills
 uv run agent run "Summarize markdown files" --skills-dir demos/basic_demo_skills --provider anthropic
 ```
 
+Run output includes both:
+
+- `events.jsonl` (event stream)
+- `llm_transcript.jsonl` (LLM request/response transcript)
+
 ## Config discovery order
 
 1. `--config <path>`
@@ -64,6 +69,12 @@ uv run agent run "Summarize markdown files" --skills-dir demos/basic_demo_skills
 
 ```bash
 uv run pytest
+```
+
+Replay transcript summary:
+
+```bash
+uv run agent replay <run_id> --llm-transcript
 ```
 
 ## Quality checks

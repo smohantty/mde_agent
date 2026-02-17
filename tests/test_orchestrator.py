@@ -4,7 +4,10 @@ import json
 from pathlib import Path
 
 from agent.config import AgentConfig
+from agent.llm.base_client import LlmResult
+from agent.llm.provider_router import ProviderRouter
 from agent.runtime.orchestrator import Orchestrator
+from agent.types import LlmRequestMeta
 
 
 def _create_demo_skill(skills_dir: Path) -> None:
@@ -87,3 +90,154 @@ def test_normalize_markdown_find_command() -> None:
     assert 'rg --files -g "*.md"' in normalized
     assert '!.venv/**' in normalized
     assert "| head -n 20" in normalized
+
+
+def test_orchestrator_writes_transcript_success(tmp_path: Path, monkeypatch) -> None:
+    skills_dir = tmp_path / "skills"
+    _create_demo_skill(skills_dir)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    def _mock_complete_structured(
+        self,
+        provider: str,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        attempt: int,
+    ) -> LlmResult:
+        return LlmResult(
+            data={
+                "selected_skill": "demo",
+                "reasoning_summary": "Done",
+                "required_disclosure_paths": [],
+                "planned_actions": [{"type": "finish", "params": {}, "expected_output": None}],
+            },
+            meta=LlmRequestMeta(
+                provider="anthropic",
+                model=model,
+                attempt=attempt,
+                latency_ms=7,
+                input_tokens=11,
+                output_tokens=13,
+            ),
+        )
+
+    monkeypatch.setattr(ProviderRouter, "complete_structured", _mock_complete_structured)
+
+    cfg = AgentConfig()
+    cfg.logging.jsonl_dir = str(tmp_path / "runs")
+    cfg.model.provider = "anthropic"
+    result = Orchestrator(cfg).run(task="inventory files", skills_dir=skills_dir)
+    assert result.status == "success"
+
+    transcript_path = (
+        Path(cfg.logging.jsonl_dir) / result.run_id / cfg.logging.llm_transcript_filename
+    )
+    rows = [json.loads(line) for line in transcript_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["status"] == "success"
+    assert rows[0]["decode_success"] is True
+    assert rows[0]["response_kind"] == "response"
+    assert rows[0]["planned_action_types"] == ["finish"]
+    assert "TASK:" in rows[0]["prompt_text"]
+
+
+def test_orchestrator_writes_transcript_retry_attempts(tmp_path: Path, monkeypatch) -> None:
+    skills_dir = tmp_path / "skills"
+    _create_demo_skill(skills_dir)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    class NetworkError(Exception):
+        pass
+
+    call_count = {"value": 0}
+
+    def _mock_complete_structured(
+        self,
+        provider: str,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        attempt: int,
+    ) -> LlmResult:
+        call_count["value"] += 1
+        if call_count["value"] == 1:
+            raise NetworkError("network down")
+        return LlmResult(
+            data={
+                "selected_skill": "demo",
+                "reasoning_summary": "Retry success",
+                "required_disclosure_paths": [],
+                "planned_actions": [{"type": "finish", "params": {}, "expected_output": None}],
+            },
+            meta=LlmRequestMeta(
+                provider="anthropic",
+                model=model,
+                attempt=attempt,
+                latency_ms=9,
+                input_tokens=12,
+                output_tokens=14,
+            ),
+        )
+
+    monkeypatch.setattr(ProviderRouter, "complete_structured", _mock_complete_structured)
+
+    cfg = AgentConfig()
+    cfg.logging.jsonl_dir = str(tmp_path / "runs")
+    cfg.model.provider = "anthropic"
+    cfg.runtime.max_llm_retries = 1
+    result = Orchestrator(cfg).run(task="inventory files", skills_dir=skills_dir)
+    assert result.status == "success"
+
+    transcript_path = (
+        Path(cfg.logging.jsonl_dir) / result.run_id / cfg.logging.llm_transcript_filename
+    )
+    rows = [json.loads(line) for line in transcript_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 2
+    assert rows[0]["status"] == "request_failed"
+    assert rows[0]["retryable"] is True
+    assert rows[1]["status"] == "success"
+
+
+def test_orchestrator_writes_transcript_decode_failed(tmp_path: Path, monkeypatch) -> None:
+    skills_dir = tmp_path / "skills"
+    _create_demo_skill(skills_dir)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    def _mock_complete_structured(
+        self,
+        provider: str,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        attempt: int,
+    ) -> LlmResult:
+        return LlmResult(
+            data="not-json-response",
+            meta=LlmRequestMeta(
+                provider="anthropic",
+                model=model,
+                attempt=attempt,
+                latency_ms=8,
+                input_tokens=10,
+                output_tokens=4,
+            ),
+        )
+
+    monkeypatch.setattr(ProviderRouter, "complete_structured", _mock_complete_structured)
+
+    cfg = AgentConfig()
+    cfg.logging.jsonl_dir = str(tmp_path / "runs")
+    cfg.model.provider = "anthropic"
+    result = Orchestrator(cfg).run(task="inventory files", skills_dir=skills_dir)
+    assert result.status == "failed"
+    assert result.message == "Failed to decode model response"
+
+    transcript_path = (
+        Path(cfg.logging.jsonl_dir) / result.run_id / cfg.logging.llm_transcript_filename
+    )
+    rows = [json.loads(line) for line in transcript_path.read_text(encoding="utf-8").splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["status"] == "decode_failed"
+    assert rows[0]["decode_success"] is False
+    assert "not-json-response" in str(rows[0]["response_text"])

@@ -1,21 +1,24 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
-from agent.config import AgentConfig, get_provider_api_key
+from agent.config import AgentConfig, ProviderName, get_provider_api_key
 from agent.llm.decoder import DecodeError, decode_model_decision, make_finish_decision
 from agent.llm.prompt_builder import build_prompt
 from agent.llm.provider_router import ProviderRouter
 from agent.logging.events import EventBus, EventContext
 from agent.logging.jsonl_sink import JsonlSink
-from agent.logging.redaction import summarize_text
+from agent.logging.redaction import redact_secrets, summarize_text
+from agent.logging.sanitizer import sanitize_text
+from agent.logging.transcript import LlmTranscriptSink
 from agent.runtime.executor import CommandExecutor
 from agent.runtime.retry import compute_backoff_delay, is_retryable_error
 from agent.runtime.signals import install_signal_handlers
@@ -23,7 +26,18 @@ from agent.skills.disclosure import DisclosureEngine
 from agent.skills.registry import SkillRegistry
 from agent.skills.router import SkillRouter
 from agent.storage.run_store import create_run_dir, generate_run_id, write_artifact
-from agent.types import ActionStep, EventRecord, ModelDecision, SkillCandidate, StepExecutionResult
+from agent.types import (
+    ActionStep,
+    ActionType,
+    EventRecord,
+    LlmTranscriptBudget,
+    LlmTranscriptRecord,
+    LlmTranscriptUsage,
+    ModelDecision,
+    ResponseKind,
+    SkillCandidate,
+    StepExecutionResult,
+)
 
 
 @dataclass
@@ -32,11 +46,41 @@ class RunResult:
     status: str
     message: str
     events_path: Path
+    llm_transcript_path: Path | None = None
 
 
 class Orchestrator:
     def __init__(self, config: AgentConfig) -> None:
         self.config = config
+
+    @staticmethod
+    def _sanitize_and_redact(text: str | None) -> str | None:
+        if text is None:
+            return None
+        sanitized = sanitize_text(text)
+        return redact_secrets(sanitized)
+
+    @staticmethod
+    def _serialize_response_payload(payload: dict[str, Any] | str | None) -> str | None:
+        if payload is None:
+            return None
+        if isinstance(payload, dict):
+            return json.dumps(payload, ensure_ascii=True)
+        return str(payload)
+
+    @staticmethod
+    def _classify_response_kind(action_types: list[ActionType]) -> ResponseKind:
+        if any(action == "call_skill" for action in action_types):
+            return "skill_call"
+        if any(action == "run_command" for action in action_types):
+            return "tool_call"
+        return "response"
+
+    @staticmethod
+    def _provider_name_for_transcript(provider_name: str) -> ProviderName:
+        if provider_name == "gemini":
+            return "gemini"
+        return "anthropic"
 
     @staticmethod
     def _build_decoder_overrides(
@@ -88,6 +132,27 @@ class Orchestrator:
                 "total_tokens": total_tokens,
             },
         )
+
+    def _write_transcript(
+        self,
+        *,
+        bus: EventBus,
+        sink: LlmTranscriptSink | None,
+        record: LlmTranscriptRecord,
+    ) -> None:
+        if sink is None:
+            return
+        try:
+            sink.write(record)
+        except Exception as exc:
+            bus.emit(
+                "llm_transcript_write_failed",
+                {
+                    "turn_index": record.turn_index,
+                    "attempt": record.attempt,
+                    "error": str(exc),
+                },
+            )
 
     def _execute_actions(
         self,
@@ -243,6 +308,8 @@ class Orchestrator:
         trace_id = uuid.uuid4().hex
         run_dir = create_run_dir(Path(self.config.logging.jsonl_dir), run_id)
         sink = JsonlSink(run_dir / "events.jsonl")
+        llm_transcript_path: Path | None = None
+        transcript_sink: LlmTranscriptSink | None = None
         bus = EventBus(
             sink=sink,
             context=EventContext(run_id=run_id, trace_id=trace_id),
@@ -250,6 +317,20 @@ class Orchestrator:
             sanitize=self.config.logging.sanitize_control_chars,
             on_emit=on_event,
         )
+        if self.config.logging.llm_transcript_enabled:
+            llm_transcript_path = run_dir / self.config.logging.llm_transcript_filename
+            try:
+                transcript_sink = LlmTranscriptSink(llm_transcript_path)
+            except Exception as exc:
+                bus.emit(
+                    "llm_transcript_write_failed",
+                    {
+                        "turn_index": 0,
+                        "attempt": 0,
+                        "error": str(exc),
+                    },
+                )
+                transcript_sink = None
 
         provider_name = provider_override or self.config.model.provider
         max_turns = (
@@ -275,7 +356,11 @@ class Orchestrator:
         if not skills:
             bus.emit("run_failed", {"reason": "no_skills_found"})
             return RunResult(
-                run_id=run_id, status="failed", message="No skills found", events_path=sink.path
+                run_id=run_id,
+                status="failed",
+                message="No skills found",
+                events_path=sink.path,
+                llm_transcript_path=llm_transcript_path,
             )
 
         router = SkillRouter(min_score=self.config.skills.prefilter_min_score)
@@ -303,6 +388,7 @@ class Orchestrator:
                     status="failed",
                     message="No candidate skills matched",
                     events_path=sink.path,
+                    llm_transcript_path=llm_transcript_path,
                 )
 
         bus.emit(
@@ -355,7 +441,11 @@ class Orchestrator:
             write_artifact(run_dir, "dry_run_prompt.txt", prompt_data.prompt)
             bus.emit("run_finished", {"mode": "dry_run"})
             return RunResult(
-                run_id=run_id, status="success", message="Dry run complete", events_path=sink.path
+                run_id=run_id,
+                status="success",
+                message="Dry run complete",
+                events_path=sink.path,
+                llm_transcript_path=llm_transcript_path,
             )
 
         anthropic_key = get_provider_api_key(self.config, "anthropic")
@@ -374,6 +464,7 @@ class Orchestrator:
                 status="failed",
                 message="Missing provider API key",
                 events_path=sink.path,
+                llm_transcript_path=llm_transcript_path,
             )
 
         provider_router = ProviderRouter(anthropic_api_key=anthropic_key, gemini_api_key=gemini_key)
@@ -395,6 +486,7 @@ class Orchestrator:
                         status="failed",
                         message="Interrupted by signal",
                         events_path=sink.path,
+                        llm_transcript_path=llm_transcript_path,
                     )
 
                 prompt_data = build_prompt(
@@ -426,12 +518,22 @@ class Orchestrator:
                         "estimated_input_tokens": prompt_data.estimated_input_tokens,
                     },
                 )
+                transcript_budget = LlmTranscriptBudget(
+                    max_context_tokens=prompt_data.budget.max_context_tokens,
+                    response_headroom_tokens=prompt_data.budget.response_headroom_tokens,
+                    allocated_prompt_tokens=prompt_data.budget.allocated_prompt_tokens,
+                    allocated_disclosure_tokens=prompt_data.budget.allocated_disclosure_tokens,
+                )
+                transcript_prompt_text = self._sanitize_and_redact(prompt_data.prompt) or ""
+                transcript_disclosed_paths = list(disclosed_snippets.keys())
 
                 llm_response_data: dict[str, Any] | str | None = None
                 llm_meta: dict[str, Any] | None = None
                 llm_error: Exception | None = None
+                last_attempt = 0
 
                 for attempt in range(1, self.config.runtime.max_llm_retries + 2):
+                    last_attempt = attempt
                     bus.emit(
                         "llm_request_sent",
                         {
@@ -455,6 +557,36 @@ class Orchestrator:
                     except Exception as exc:
                         llm_error = exc
                         retryable = is_retryable_error(exc)
+                        request_failed_record = LlmTranscriptRecord(
+                            run_id=run_id,
+                            trace_id=trace_id,
+                            span_id=uuid.uuid4().hex[:12],
+                            turn_index=turn_index,
+                            attempt=attempt,
+                            provider=self._provider_name_for_transcript(provider_name),
+                            model=self.config.model.name,
+                            status="request_failed",
+                            prompt_hash=prompt_hash,
+                            response_hash=None,
+                            prompt_text=transcript_prompt_text,
+                            response_text=None,
+                            prompt_estimated_tokens=prompt_data.estimated_input_tokens,
+                            budget=transcript_budget,
+                            disclosed_paths=transcript_disclosed_paths,
+                            usage=LlmTranscriptUsage(),
+                            decode_success=False,
+                            selected_skill=None,
+                            planned_action_types=[],
+                            required_disclosure_paths=[],
+                            response_kind="response",
+                            error=self._sanitize_and_redact(str(exc)),
+                            retryable=retryable,
+                        )
+                        self._write_transcript(
+                            bus=bus,
+                            sink=transcript_sink,
+                            record=request_failed_record,
+                        )
                         if retryable and attempt <= self.config.runtime.max_llm_retries:
                             delay = compute_backoff_delay(
                                 attempt=attempt,
@@ -493,6 +625,7 @@ class Orchestrator:
                         status="failed",
                         message="LLM request failed",
                         events_path=sink.path,
+                        llm_transcript_path=llm_transcript_path,
                     )
 
                 bus.emit(
@@ -503,6 +636,18 @@ class Orchestrator:
                         "response_preview": summarize_text(str(llm_response_data)),
                     },
                 )
+                response_text_raw = self._serialize_response_payload(llm_response_data)
+                response_text = self._sanitize_and_redact(response_text_raw)
+                response_hash = (
+                    hashlib.sha256(response_text.encode("utf-8")).hexdigest()
+                    if response_text is not None
+                    else None
+                )
+                usage = LlmTranscriptUsage(
+                    input_tokens=(llm_meta or {}).get("input_tokens"),
+                    output_tokens=(llm_meta or {}).get("output_tokens"),
+                    latency_ms=(llm_meta or {}).get("latency_ms"),
+                )
 
                 decision: ModelDecision
                 try:
@@ -512,12 +657,43 @@ class Orchestrator:
                         skill_default_action_params=skill_default_action_params,
                     )
                 except DecodeError as exc:
+                    decode_failed_record = LlmTranscriptRecord(
+                        run_id=run_id,
+                        trace_id=trace_id,
+                        span_id=uuid.uuid4().hex[:12],
+                        turn_index=turn_index,
+                        attempt=int((llm_meta or {}).get("attempt", last_attempt)),
+                        provider=self._provider_name_for_transcript(provider_name),
+                        model=self.config.model.name,
+                        status="decode_failed",
+                        prompt_hash=prompt_hash,
+                        response_hash=response_hash,
+                        prompt_text=transcript_prompt_text,
+                        response_text=response_text,
+                        prompt_estimated_tokens=prompt_data.estimated_input_tokens,
+                        budget=transcript_budget,
+                        disclosed_paths=transcript_disclosed_paths,
+                        usage=usage,
+                        decode_success=False,
+                        selected_skill=None,
+                        planned_action_types=[],
+                        required_disclosure_paths=[],
+                        response_kind="response",
+                        error=self._sanitize_and_redact(str(exc)),
+                        retryable=None,
+                    )
+                    self._write_transcript(
+                        bus=bus,
+                        sink=transcript_sink,
+                        record=decode_failed_record,
+                    )
                     bus.emit("run_failed", {"reason": "decode_failed", "error": str(exc)})
                     return RunResult(
                         run_id=run_id,
                         status="failed",
                         message="Failed to decode model response",
                         events_path=sink.path,
+                        llm_transcript_path=llm_transcript_path,
                     )
 
                 bus.emit(
@@ -532,6 +708,41 @@ class Orchestrator:
 
                 if not decision.planned_actions:
                     decision = make_finish_decision("No actions returned; ending run")
+
+                planned_action_types = cast(
+                    list[ActionType],
+                    [action.type for action in decision.planned_actions],
+                )
+                success_record = LlmTranscriptRecord(
+                    run_id=run_id,
+                    trace_id=trace_id,
+                    span_id=uuid.uuid4().hex[:12],
+                    turn_index=turn_index,
+                    attempt=int((llm_meta or {}).get("attempt", last_attempt)),
+                    provider=self._provider_name_for_transcript(provider_name),
+                    model=self.config.model.name,
+                    status="success",
+                    prompt_hash=prompt_hash,
+                    response_hash=response_hash,
+                    prompt_text=transcript_prompt_text,
+                    response_text=response_text,
+                    prompt_estimated_tokens=prompt_data.estimated_input_tokens,
+                    budget=transcript_budget,
+                    disclosed_paths=transcript_disclosed_paths,
+                    usage=usage,
+                    decode_success=True,
+                    selected_skill=decision.selected_skill,
+                    planned_action_types=planned_action_types,
+                    required_disclosure_paths=decision.required_disclosure_paths,
+                    response_kind=self._classify_response_kind(planned_action_types),
+                    error=None,
+                    retryable=None,
+                )
+                self._write_transcript(
+                    bus=bus,
+                    sink=transcript_sink,
+                    record=success_record,
+                )
 
                 bus.emit(
                     "skill_invocation_started",
@@ -574,6 +785,7 @@ class Orchestrator:
                         status="success",
                         message="Run completed",
                         events_path=sink.path,
+                        llm_transcript_path=llm_transcript_path,
                     )
 
                 if any(item.status == "failed" for item in step_results):
@@ -585,6 +797,7 @@ class Orchestrator:
                         status="failed",
                         message="Action execution failed",
                         events_path=sink.path,
+                        llm_transcript_path=llm_transcript_path,
                     )
 
         bus.emit("run_failed", {"reason": "max_turns_exceeded", "max_turns": max_turns})
@@ -593,4 +806,5 @@ class Orchestrator:
             status="failed",
             message="Max turns exceeded",
             events_path=sink.path,
+            llm_transcript_path=llm_transcript_path,
         )

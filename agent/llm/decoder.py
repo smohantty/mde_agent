@@ -236,7 +236,10 @@ def decode_model_decision(
     skill_action_aliases: dict[str, dict[str, str]] | None = None,
     skill_default_action_params: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> ModelDecision:
-    payload = normalize_provider_output(raw)
+    try:
+        payload = normalize_provider_output(raw)
+    except ValueError as exc:
+        raise DecodeError(f"Unable to decode model decision: {exc}") from exc
     payload = _repair_payload(
         payload,
         skill_action_aliases=skill_action_aliases,

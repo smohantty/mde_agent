@@ -31,6 +31,8 @@ def test_write_default_and_reload(tmp_path: Path) -> None:
     write_default_config(path)
     config = load_config(path)
     assert config.logging.jsonl_dir == "./runs"
+    assert config.logging.llm_transcript_enabled is True
+    assert config.logging.llm_transcript_filename == "llm_transcript.jsonl"
 
 
 def test_provider_api_key_lookup(monkeypatch) -> None:

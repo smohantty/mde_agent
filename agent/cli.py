@@ -132,6 +132,8 @@ def run_command(
         raise typer.Exit(code=1)
 
     console.print(f"Events: {result.events_path}")
+    if result.llm_transcript_path is not None:
+        console.print(f"LLM Transcript: {result.llm_transcript_path}")
 
 
 @skills_app.command("list")
@@ -182,6 +184,9 @@ def skills_inspect(
 def replay_command(
     run_id: Annotated[str, typer.Argument(help="Run ID")],
     event_stream: Annotated[bool, typer.Option(help="Replay events as a stream")] = True,
+    llm_transcript: Annotated[
+        bool, typer.Option(help="Replay concise LLM transcript entries")
+    ] = False,
     config: Annotated[Path | None, typer.Option(help="Path to config file")] = None,
 ) -> None:
     cfg = _load_config_or_exit(config)
@@ -200,6 +205,26 @@ def replay_command(
             )
         else:
             console.print_json(json.dumps(data))
+
+    if llm_transcript:
+        transcript_path = Path(cfg.logging.jsonl_dir) / run_id / cfg.logging.llm_transcript_filename
+        if not transcript_path.exists():
+            console.print(f"LLM transcript file not found: {transcript_path}")
+            raise typer.Exit(code=1)
+
+        transcript_lines = transcript_path.read_text(encoding="utf-8").splitlines()
+        for line in transcript_lines:
+            record = json.loads(line)
+            usage = record.get("usage", {})
+            action_types = ",".join(record.get("planned_action_types", []))
+            console.print(
+                f"[{record['timestamp']}] llm turn={record['turn_index']} "
+                f"attempt={record['attempt']} provider={record['provider']} "
+                f"model={record['model']} status={record['status']} "
+                f"kind={record['response_kind']} skill={record.get('selected_skill')} "
+                f"actions={action_types} latency_ms={usage.get('latency_ms')} "
+                f"in={usage.get('input_tokens')} out={usage.get('output_tokens')}"
+            )
 
 
 @config_app.command("init")

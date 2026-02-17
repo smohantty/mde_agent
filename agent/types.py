@@ -6,6 +6,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 ActionType = Literal["call_skill", "run_command", "ask_user", "finish"]
+ResponseKind = Literal["skill_call", "tool_call", "response"]
+LlmTranscriptStatus = Literal["success", "request_failed", "decode_failed"]
 
 
 class SkillMetadata(BaseModel):
@@ -61,6 +63,46 @@ class LlmRequestMeta(BaseModel):
     latency_ms: int
     input_tokens: int | None = None
     output_tokens: int | None = None
+
+
+class LlmTranscriptBudget(BaseModel):
+    max_context_tokens: int
+    response_headroom_tokens: int
+    allocated_prompt_tokens: int
+    allocated_disclosure_tokens: int
+
+
+class LlmTranscriptUsage(BaseModel):
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    latency_ms: int | None = None
+
+
+class LlmTranscriptRecord(BaseModel):
+    run_id: str
+    trace_id: str
+    span_id: str
+    timestamp: str = Field(default_factory=lambda: datetime.now(tz=UTC).isoformat())
+    turn_index: int
+    attempt: int
+    provider: Literal["anthropic", "gemini"]
+    model: str
+    status: LlmTranscriptStatus
+    prompt_hash: str
+    response_hash: str | None = None
+    prompt_text: str
+    response_text: str | None = None
+    prompt_estimated_tokens: int
+    budget: LlmTranscriptBudget
+    disclosed_paths: list[str] = Field(default_factory=list)
+    usage: LlmTranscriptUsage = Field(default_factory=LlmTranscriptUsage)
+    decode_success: bool = False
+    selected_skill: str | None = None
+    planned_action_types: list[ActionType] = Field(default_factory=list)
+    required_disclosure_paths: list[str] = Field(default_factory=list)
+    response_kind: ResponseKind = "response"
+    error: str | None = None
+    retryable: bool | None = None
 
 
 class EventRecord(BaseModel):
