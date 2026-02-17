@@ -53,17 +53,11 @@ def test_replay_with_llm_transcript(monkeypatch, tmp_path: Path) -> None:
     (run_dir / "events.jsonl").write_text(json.dumps(events_row) + "\n", encoding="utf-8")
 
     transcript_row = {
-        "run_id": run_id,
-        "trace_id": "trace1",
-        "span_id": "span2",
-        "timestamp": "2026-02-17T00:00:01+00:00",
         "turn_index": 1,
         "attempt": 1,
         "provider": "anthropic",
         "model": "claude-sonnet-4-5",
         "status": "success",
-        "prompt_hash": "abc",
-        "response_hash": "def",
         "prompt_text": "prompt",
         "response_text": "response",
         "prompt_estimated_tokens": 100,

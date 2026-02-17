@@ -558,16 +558,11 @@ class Orchestrator:
                         llm_error = exc
                         retryable = is_retryable_error(exc)
                         request_failed_record = LlmTranscriptRecord(
-                            run_id=run_id,
-                            trace_id=trace_id,
-                            span_id=uuid.uuid4().hex[:12],
                             turn_index=turn_index,
                             attempt=attempt,
                             provider=self._provider_name_for_transcript(provider_name),
                             model=self.config.model.name,
                             status="request_failed",
-                            prompt_hash=prompt_hash,
-                            response_hash=None,
                             prompt_text=transcript_prompt_text,
                             response_text=None,
                             prompt_estimated_tokens=prompt_data.estimated_input_tokens,
@@ -638,11 +633,6 @@ class Orchestrator:
                 )
                 response_text_raw = self._serialize_response_payload(llm_response_data)
                 response_text = self._sanitize_and_redact(response_text_raw)
-                response_hash = (
-                    hashlib.sha256(response_text.encode("utf-8")).hexdigest()
-                    if response_text is not None
-                    else None
-                )
                 usage = LlmTranscriptUsage(
                     input_tokens=(llm_meta or {}).get("input_tokens"),
                     output_tokens=(llm_meta or {}).get("output_tokens"),
@@ -658,16 +648,11 @@ class Orchestrator:
                     )
                 except DecodeError as exc:
                     decode_failed_record = LlmTranscriptRecord(
-                        run_id=run_id,
-                        trace_id=trace_id,
-                        span_id=uuid.uuid4().hex[:12],
                         turn_index=turn_index,
                         attempt=int((llm_meta or {}).get("attempt", last_attempt)),
                         provider=self._provider_name_for_transcript(provider_name),
                         model=self.config.model.name,
                         status="decode_failed",
-                        prompt_hash=prompt_hash,
-                        response_hash=response_hash,
                         prompt_text=transcript_prompt_text,
                         response_text=response_text,
                         prompt_estimated_tokens=prompt_data.estimated_input_tokens,
@@ -714,16 +699,11 @@ class Orchestrator:
                     [action.type for action in decision.planned_actions],
                 )
                 success_record = LlmTranscriptRecord(
-                    run_id=run_id,
-                    trace_id=trace_id,
-                    span_id=uuid.uuid4().hex[:12],
                     turn_index=turn_index,
                     attempt=int((llm_meta or {}).get("attempt", last_attempt)),
                     provider=self._provider_name_for_transcript(provider_name),
                     model=self.config.model.name,
                     status="success",
-                    prompt_hash=prompt_hash,
-                    response_hash=response_hash,
                     prompt_text=transcript_prompt_text,
                     response_text=response_text,
                     prompt_estimated_tokens=prompt_data.estimated_input_tokens,

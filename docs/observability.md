@@ -39,3 +39,4 @@ Transcript rows include:
 - token usage and latency
 - decoded action types
 - response classification (`skill_call`, `tool_call`, `response`)
+- user-focused rows (no run/trace/span/timestamp/hash headers; those remain in `events.jsonl`)

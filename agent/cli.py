@@ -218,7 +218,7 @@ def replay_command(
             usage = record.get("usage", {})
             action_types = ",".join(record.get("planned_action_types", []))
             console.print(
-                f"[{record['timestamp']}] llm turn={record['turn_index']} "
+                f"llm turn={record['turn_index']} "
                 f"attempt={record['attempt']} provider={record['provider']} "
                 f"model={record['model']} status={record['status']} "
                 f"kind={record['response_kind']} skill={record.get('selected_skill')} "

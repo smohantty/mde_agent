@@ -79,17 +79,11 @@ class LlmTranscriptUsage(BaseModel):
 
 
 class LlmTranscriptRecord(BaseModel):
-    run_id: str
-    trace_id: str
-    span_id: str
-    timestamp: str = Field(default_factory=lambda: datetime.now(tz=UTC).isoformat())
     turn_index: int
     attempt: int
     provider: Literal["anthropic", "gemini"]
     model: str
     status: LlmTranscriptStatus
-    prompt_hash: str
-    response_hash: str | None = None
     prompt_text: str
     response_text: str | None = None
     prompt_estimated_tokens: int

@@ -11,16 +11,11 @@ from agent.types import LlmTranscriptBudget, LlmTranscriptRecord, LlmTranscriptU
 def test_transcript_sink_writes_jsonl(tmp_path: Path) -> None:
     sink = LlmTranscriptSink(tmp_path / "llm_transcript.jsonl")
     record = LlmTranscriptRecord(
-        run_id="run1",
-        trace_id="trace1",
-        span_id="span1",
         turn_index=1,
         attempt=1,
         provider="anthropic",
         model="claude-sonnet-4-5",
         status="success",
-        prompt_hash="abc",
-        response_hash="def",
         prompt_text="prompt",
         response_text="response",
         prompt_estimated_tokens=10,
