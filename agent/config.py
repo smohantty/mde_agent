@@ -20,7 +20,9 @@ class ModelConfig(BaseModel):
     max_tokens: int = 4096
     max_context_tokens: int = 32000
     response_headroom_tokens: int = 2000
-    structured_output_mode: str = "native_with_json_fallback"
+    structured_output_mode: Literal[
+        "json_only", "native_with_json_fallback", "native_only"
+    ] = "native_with_json_fallback"
     providers: dict[ProviderName, ProviderConfig] = Field(
         default_factory=lambda: {
             "anthropic": ProviderConfig(api_key_env="ANTHROPIC_API_KEY"),

@@ -209,23 +209,41 @@ class Orchestrator:
         max_tokens: int,
         prompt: str,
         attempt: int,
+        tools: list[dict[str, Any]] | None = None,
+        force_tool_use: bool = False,
     ) -> dict[str, Any]:
         if provider == "anthropic":
-            return {
+            req: dict[str, Any] = {
                 "attempt": attempt,
                 "model": model,
                 "max_tokens": max_tokens,
                 "messages": [{"role": "user", "content": prompt}],
             }
+            if tools:
+                req["tools"] = [t["name"] for t in tools]
+                if force_tool_use:
+                    req["tool_choice"] = {
+                        "type": "tool",
+                        "name": tools[0]["name"],
+                    }
+                else:
+                    req["tool_choice"] = {"type": "auto"}
+            return req
         if provider == "gemini":
+            config: dict[str, Any] = {
+                "max_output_tokens": max_tokens,
+            }
+            if tools:
+                config["tools"] = [t["name"] for t in tools]
+                fc_mode = "ANY" if force_tool_use else "AUTO"
+                config["tool_config"] = {"function_calling_mode": fc_mode}
+            else:
+                config["response_mime_type"] = "application/json"
             return {
                 "attempt": attempt,
                 "model": model,
                 "contents": prompt,
-                "config": {
-                    "response_mime_type": "application/json",
-                    "max_output_tokens": max_tokens,
-                },
+                "config": config,
             }
         return {
             "attempt": attempt,
@@ -628,6 +646,8 @@ class Orchestrator:
         context: LlmInvocationContext,
         bus: EventBus,
         transcript_sink: LlmTranscriptSink | None,
+        tools: list[dict[str, Any]] | None = None,
+        force_tool_use: bool = False,
     ) -> LlmInvocationResult:
         response_data: dict[str, Any] | str | None = None
         llm_meta: dict[str, Any] | None = None
@@ -643,6 +663,8 @@ class Orchestrator:
                 max_tokens=max_tokens,
                 prompt=prompt,
                 attempt=attempt,
+                tools=tools,
+                force_tool_use=force_tool_use,
             )
             raw_request_text = (
                 self._sanitize_and_redact(json.dumps(request_payload, ensure_ascii=True)) or ""
@@ -672,6 +694,8 @@ class Orchestrator:
                     model=model,
                     max_tokens=max_tokens,
                     attempt=attempt,
+                    tools=tools,
+                    force_tool_use=force_tool_use,
                 )
                 response_data = result.data
                 llm_meta = result.meta.model_dump()
@@ -1068,6 +1092,10 @@ class Orchestrator:
             )
 
         if dry_run:
+            dry_run_native_tools = self.config.model.structured_output_mode in (
+                "native_with_json_fallback",
+                "native_only",
+            )
             prompt_data = build_prompt(
                 task=task,
                 candidates=candidates,
@@ -1076,6 +1104,7 @@ class Orchestrator:
                 step_results=[],
                 max_context_tokens=self.config.model.max_context_tokens,
                 response_headroom_tokens=self.config.model.response_headroom_tokens,
+                use_native_tools=dry_run_native_tools,
             )
             bus.emit(
                 "prompt_budget_computed",
@@ -1147,6 +1176,20 @@ class Orchestrator:
                         llm_transcript_path=llm_transcript_path,
                     )
 
+                output_mode = self.config.model.structured_output_mode
+                use_native_tools = output_mode in (
+                    "native_with_json_fallback",
+                    "native_only",
+                )
+                force_tool_use = output_mode == "native_only"
+                decision_tools: list[dict[str, Any]] | None = None
+                if use_native_tools:
+                    from agent.llm.structured_output import (
+                        build_agent_decision_tool_schema,
+                    )
+
+                    decision_tools = [build_agent_decision_tool_schema()]
+
                 prompt_data = build_prompt(
                     task=task,
                     candidates=candidates,
@@ -1156,6 +1199,7 @@ class Orchestrator:
                     blocked_skill_name=blocked_self_handoff_skill,
                     max_context_tokens=self.config.model.max_context_tokens,
                     response_headroom_tokens=self.config.model.response_headroom_tokens,
+                    use_native_tools=use_native_tools,
                 )
                 if blocked_self_handoff_skill:
                     bus.emit(
@@ -1210,7 +1254,49 @@ class Orchestrator:
                     context=invocation_context,
                     bus=bus,
                     transcript_sink=transcript_sink,
+                    tools=decision_tools,
+                    force_tool_use=force_tool_use,
                 )
+
+                # Request-level fallback: if native tool request failed
+                # and mode is native_with_json_fallback, retry without tools.
+                if (
+                    invocation_result.response_data is None
+                    and decision_tools is not None
+                    and output_mode == "native_with_json_fallback"
+                ):
+                    bus.emit(
+                        "native_tool_fallback",
+                        {
+                            "turn_index": turn_index,
+                            "reason": str(invocation_result.llm_error),
+                        },
+                    )
+                    fallback_prompt = build_prompt(
+                        task=task,
+                        candidates=candidates,
+                        all_skill_frontmatter=all_skill_frontmatter,
+                        disclosed_snippets=disclosed_snippets,
+                        step_results=accumulated_results,
+                        blocked_skill_name=blocked_self_handoff_skill,
+                        max_context_tokens=self.config.model.max_context_tokens,
+                        response_headroom_tokens=(
+                            self.config.model.response_headroom_tokens
+                        ),
+                        use_native_tools=False,
+                    )
+                    invocation_result = self._invoke_llm_with_logging(
+                        provider_router=provider_router,
+                        provider_name=provider_name,
+                        prompt=fallback_prompt.prompt,
+                        model=self.config.model.name,
+                        max_tokens=self.config.model.max_tokens,
+                        run_dir=run_dir,
+                        context=invocation_context,
+                        bus=bus,
+                        transcript_sink=transcript_sink,
+                    )
+
                 llm_response_data = invocation_result.response_data
                 if llm_response_data is None:
                     bus.emit(

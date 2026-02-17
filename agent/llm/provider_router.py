@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from agent.llm.anthropic_client import AnthropicClient
 from agent.llm.base_client import BaseLlmClient, LlmResult
 from agent.llm.gemini_client import GeminiClient
@@ -17,8 +19,22 @@ class ProviderRouter:
         return provider in self._clients
 
     def complete_structured(
-        self, provider: str, prompt: str, model: str, max_tokens: int, attempt: int
+        self,
+        provider: str,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        attempt: int,
+        tools: list[dict[str, Any]] | None = None,
+        force_tool_use: bool = False,
     ) -> LlmResult:
         if provider not in self._clients:
             raise RuntimeError(f"Provider is not configured: {provider}")
-        return self._clients[provider].complete_structured(prompt, model, max_tokens, attempt)
+        return self._clients[provider].complete_structured(
+            prompt,
+            model,
+            max_tokens,
+            attempt,
+            tools=tools,
+            force_tool_use=force_tool_use,
+        )

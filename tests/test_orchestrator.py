@@ -113,6 +113,7 @@ def test_orchestrator_writes_transcript_success(tmp_path: Path, monkeypatch) -> 
         model: str,
         max_tokens: int,
         attempt: int,
+        **kwargs: object,
     ) -> LlmResult:
         return LlmResult(
             data={
@@ -165,6 +166,7 @@ def test_orchestrator_finish_uses_summary_field(tmp_path: Path, monkeypatch) -> 
         model: str,
         max_tokens: int,
         attempt: int,
+        **kwargs: object,
     ) -> LlmResult:
         return LlmResult(
             data={
@@ -230,6 +232,7 @@ def test_orchestrator_tool_output_is_reused_before_finish(tmp_path: Path, monkey
         model: str,
         max_tokens: int,
         attempt: int,
+        **kwargs: object,
     ) -> LlmResult:
         calls["count"] += 1
         if calls["count"] == 1:
@@ -317,6 +320,7 @@ def test_orchestrator_synthesizes_final_answer_from_tool_evidence(
         model: str,
         max_tokens: int,
         attempt: int,
+        **kwargs: object,
     ) -> LlmResult:
         calls["count"] += 1
         if calls["count"] == 1:
@@ -396,6 +400,7 @@ def test_orchestrator_writes_transcript_retry_attempts(tmp_path: Path, monkeypat
         model: str,
         max_tokens: int,
         attempt: int,
+        **kwargs: object,
     ) -> LlmResult:
         call_count["value"] += 1
         if call_count["value"] == 1:
@@ -448,6 +453,7 @@ def test_orchestrator_writes_transcript_decode_failed(tmp_path: Path, monkeypatc
         model: str,
         max_tokens: int,
         attempt: int,
+        **kwargs: object,
     ) -> LlmResult:
         return LlmResult(
             data="not-json-response",
@@ -493,6 +499,7 @@ def test_orchestrator_recovers_from_repeated_self_handoff_loop(tmp_path: Path, m
         model: str,
         max_tokens: int,
         attempt: int,
+        **kwargs: object,
     ) -> LlmResult:
         return LlmResult(
             data={
@@ -558,6 +565,7 @@ def test_all_llm_calls_logged_across_call_sites(tmp_path: Path, monkeypatch) -> 
         model: str,
         max_tokens: int,
         attempt: int,
+        **kwargs: object,
     ) -> LlmResult:
         calls["count"] += 1
         if calls["count"] == 1:
@@ -679,6 +687,7 @@ def test_synthesis_request_failure_is_logged(tmp_path: Path, monkeypatch) -> Non
         model: str,
         max_tokens: int,
         attempt: int,
+        **kwargs: object,
     ) -> LlmResult:
         calls["count"] += 1
         if calls["count"] == 1:
@@ -764,6 +773,7 @@ def test_retry_attempts_logged_with_call_site(tmp_path: Path, monkeypatch) -> No
         model: str,
         max_tokens: int,
         attempt: int,
+        **kwargs: object,
     ) -> LlmResult:
         call_count["value"] += 1
         if call_count["value"] == 1:

@@ -34,3 +34,53 @@ def normalize_provider_output(raw: dict[str, Any] | str) -> dict[str, Any]:
     if payload is not None:
         return payload
     raise ValueError("Could not normalize provider output to JSON object")
+
+
+def build_agent_decision_tool_schema() -> dict[str, Any]:
+    """Return a tool definition whose input schema matches ModelDecision."""
+    return {
+        "name": "agent_decision",
+        "description": (
+            "Return the agent's decision including skill selection, "
+            "reasoning, disclosure requests, and planned actions."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "selected_skill": {
+                    "type": ["string", "null"],
+                    "description": "Skill name from catalog, or null if no skill needed",
+                },
+                "reasoning_summary": {
+                    "type": "string",
+                    "description": "Brief reasoning for the decision",
+                },
+                "required_disclosure_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Paths to request for deeper context",
+                },
+                "planned_actions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "run_command",
+                                    "call_skill",
+                                    "ask_user",
+                                    "finish",
+                                ],
+                            },
+                            "params": {"type": "object"},
+                            "expected_output": {"type": ["string", "null"]},
+                        },
+                        "required": ["type", "params"],
+                    },
+                },
+            },
+            "required": ["reasoning_summary", "planned_actions"],
+        },
+    }

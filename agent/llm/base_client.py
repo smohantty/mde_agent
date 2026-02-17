@@ -18,6 +18,12 @@ class BaseLlmClient(ABC):
 
     @abstractmethod
     def complete_structured(
-        self, prompt: str, model: str, max_tokens: int, attempt: int
+        self,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        attempt: int,
+        tools: list[dict[str, Any]] | None = None,
+        force_tool_use: bool = False,
     ) -> LlmResult:
         raise NotImplementedError

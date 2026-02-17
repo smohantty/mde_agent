@@ -24,6 +24,7 @@ def build_prompt(
     max_context_tokens: int,
     response_headroom_tokens: int,
     blocked_skill_name: str | None = None,
+    use_native_tools: bool = False,
 ) -> PromptBuildResult:
     run_state = {
         "executed_steps": [item.model_dump() for item in step_results],
@@ -32,9 +33,7 @@ def build_prompt(
     candidates_payload = [item.model_dump() for item in candidates]
     disclosed_payload = disclosed_snippets
 
-    instruction = (
-        "You are an autonomous agent. Return ONLY a JSON object (no markdown fences) with keys: "
-        "selected_skill, reasoning_summary, required_disclosure_paths, planned_actions. "
+    _shared_rules = (
         "Use ALL_SKILL_FRONTMATTER as the authoritative skill catalog. "
         "selected_skill MUST be either null or one of the listed skill names. "
         "Skill calls are OPTIONAL. "
@@ -51,6 +50,21 @@ def build_prompt(
         "Use ask_user only when truly blocked by missing required input. "
         "Respect RUN_CONSTRAINTS when present; they are mandatory."
     )
+
+    if use_native_tools:
+        instruction = (
+            "You are an autonomous agent. "
+            "Use the agent_decision tool to return your decision. "
+            + _shared_rules
+        )
+    else:
+        instruction = (
+            "You are an autonomous agent. "
+            "Return ONLY a JSON object (no markdown fences) with keys: "
+            "selected_skill, reasoning_summary, required_disclosure_paths, "
+            "planned_actions. "
+            + _shared_rules
+        )
 
     run_constraints: dict[str, Any] = {}
     if blocked_skill_name:
