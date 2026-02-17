@@ -92,9 +92,11 @@ class LlmTranscriptRecord(BaseModel):
     usage: LlmTranscriptUsage = Field(default_factory=LlmTranscriptUsage)
     decode_success: bool = False
     selected_skill: str | None = None
+    raw_action_types: list[str] = Field(default_factory=list)
     planned_action_types: list[ActionType] = Field(default_factory=list)
     required_disclosure_paths: list[str] = Field(default_factory=list)
     response_kind: ResponseKind = "response"
+    response_kind_reason: str | None = None
     error: str | None = None
     retryable: bool | None = None
 

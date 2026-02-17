@@ -29,14 +29,17 @@ Core events include:
 - `llm_request_sent`
 - `llm_response_received`
 - `llm_decision_decoded`
+- `self_handoff_detected` (loop-safety signal for repeated same-skill handoffs)
 - `skill_step_executed`
 - `run_finished` / `run_failed`
 
 Transcript entries include:
 
 - full prompt/response bodies (sanitized + redacted)
+- explicit request/response sections (`--- Request Prompt ---`, `--- Raw Model Response ---`)
 - provider/model/attempt metadata
 - token usage and latency
-- decoded action types
+- raw action types from model output and normalized action types after decoding
 - response classification (`skill_call`, `tool_call`, `response`)
+- classification reason (`Response Kind Mapping`) so it is clear why a response was mapped
 - user-focused plain-text blocks (no run/trace/span/timestamp/hash headers; those remain in `events.jsonl`)

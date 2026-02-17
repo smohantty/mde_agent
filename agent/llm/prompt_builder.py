@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Any
 
 from agent.llm.token_budget import compute_budget, estimate_tokens
 from agent.types import SkillCandidate, StepExecutionResult, TokenBudget
@@ -17,6 +18,7 @@ class PromptBuildResult:
 def build_prompt(
     task: str,
     candidates: list[SkillCandidate],
+    all_skill_frontmatter: list[dict[str, Any]],
     disclosed_snippets: dict[str, str],
     step_results: list[StepExecutionResult],
     max_context_tokens: int,
@@ -32,6 +34,14 @@ def build_prompt(
     instruction = (
         "You are an autonomous agent. Return ONLY a JSON object (no markdown fences) with keys: "
         "selected_skill, reasoning_summary, required_disclosure_paths, planned_actions. "
+        "Use ALL_SKILL_FRONTMATTER as the authoritative skill catalog. "
+        "selected_skill MUST be either null or one of the listed skill names. "
+        "Skill calls are OPTIONAL. "
+        "Do not use call_skill unless delegation to a skill is required. "
+        "If the task can be completed directly with run_command and/or finish, "
+        "set selected_skill to null and do not emit call_skill. "
+        "Avoid repetitive self-handoffs (calling the same selected skill "
+        "repeatedly without new work). "
         "Allowed action types are EXACTLY: run_command, call_skill, ask_user, finish. "
         "Do not invent action types. "
         "For run_command, params MUST include a shell command in params.command. "
@@ -45,6 +55,7 @@ def build_prompt(
             instruction,
             f"TASK:\n{task}",
             f"RUN_STATE:\n{json.dumps(run_state, ensure_ascii=True)}",
+            f"ALL_SKILL_FRONTMATTER:\n{json.dumps(all_skill_frontmatter, ensure_ascii=True)}",
             f"CANDIDATE_SKILLS:\n{json.dumps(candidates_payload, ensure_ascii=True)}",
             f"DISCLOSED_CONTEXT:\n{json.dumps(disclosed_payload, ensure_ascii=True)}",
         ]

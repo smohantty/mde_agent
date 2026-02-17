@@ -40,8 +40,9 @@ def test_transcript_sink_writes_readable_log(tmp_path: Path) -> None:
     assert len(rows) == 1
     assert "Status: success" in rows[0]
     assert "Provider: anthropic" in rows[0]
-    assert "--- Prompt ---" in rows[0]
-    assert "--- Response ---" in rows[0]
+    assert "--- Request Prompt ---" in rows[0]
+    assert "--- Raw Model Response ---" in rows[0]
+    assert "Response Kind Mapping:" in rows[0]
 
 
 def test_transcript_text_is_sanitized_and_redacted() -> None:

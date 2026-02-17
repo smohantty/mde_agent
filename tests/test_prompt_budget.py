@@ -19,10 +19,13 @@ def test_prompt_builder_includes_execution_results() -> None:
     built = build_prompt(
         task="do x",
         candidates=candidates,
+        all_skill_frontmatter=[{"name": "x", "description": "demo"}],
         disclosed_snippets={"section:Purpose": "text"},
         step_results=results,
         max_context_tokens=32000,
         response_headroom_tokens=2000,
     )
     assert "executed_steps" in built.prompt
+    assert "ALL_SKILL_FRONTMATTER" in built.prompt
+    assert "Skill calls are OPTIONAL." in built.prompt
     assert built.budget.allocated_prompt_tokens > 0

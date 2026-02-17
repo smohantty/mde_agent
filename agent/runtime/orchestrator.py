@@ -14,6 +14,7 @@ from agent.config import AgentConfig, ProviderName, get_provider_api_key
 from agent.llm.decoder import DecodeError, decode_model_decision, make_finish_decision
 from agent.llm.prompt_builder import build_prompt
 from agent.llm.provider_router import ProviderRouter
+from agent.llm.structured_output import normalize_provider_output
 from agent.logging.events import EventBus, EventContext
 from agent.logging.jsonl_sink import JsonlSink
 from agent.logging.redaction import redact_secrets, summarize_text
@@ -77,6 +78,16 @@ class Orchestrator:
         return "response"
 
     @staticmethod
+    def _response_kind_reason(kind: ResponseKind, action_types: list[ActionType]) -> str:
+        if kind == "skill_call":
+            return "Mapped to skill_call because normalized actions include call_skill."
+        if kind == "tool_call":
+            return "Mapped to tool_call because normalized actions include run_command."
+        if action_types:
+            return "Mapped to response because normalized actions have no call_skill/run_command."
+        return "Mapped to response because no normalized actions were decoded."
+
+    @staticmethod
     def _provider_name_for_transcript(provider_name: str) -> ProviderName:
         if provider_name == "gemini":
             return "gemini"
@@ -110,10 +121,33 @@ class Orchestrator:
             head_match = re.search(r"head\s+-(?:n\s*)?(\d+)", normalized)
             limit = int(head_match.group(1)) if head_match else 20
             return (
-                'rg --files -g "*.md" -g "!.venv/**" -g "!runs/**" -g "!.git/**" '
-                f"| head -n {limit}"
+                f'rg --files -g "*.md" -g "!.venv/**" -g "!runs/**" -g "!.git/**" | head -n {limit}'
             )
         return normalized
+
+    @staticmethod
+    def _extract_raw_action_types(raw_response: dict[str, Any] | str | None) -> list[str]:
+        if raw_response is None:
+            return []
+        try:
+            payload = normalize_provider_output(raw_response)
+        except ValueError:
+            return []
+
+        planned = payload.get("planned_actions")
+        if not isinstance(planned, list):
+            return []
+
+        action_types: list[str] = []
+        for step in planned:
+            if not isinstance(step, dict):
+                continue
+            for key in ("type", "action_type", "action", "step_type", "operation"):
+                value = step.get(key)
+                if isinstance(value, str) and value.strip():
+                    action_types.append(value.strip())
+                    break
+        return action_types
 
     def _emit_disclosure(
         self,
@@ -350,6 +384,7 @@ class Orchestrator:
         registry = SkillRegistry(skills_dir)
         skills = registry.load()
         skill_action_aliases, skill_default_action_params = self._build_decoder_overrides(skills)
+        all_skill_frontmatter = [dict(skill.frontmatter) for skill in skills]
         bus.emit(
             "skill_catalog_loaded", {"skills_count": len(skills), "skills_dir": str(skills_dir)}
         )
@@ -416,6 +451,7 @@ class Orchestrator:
             prompt_data = build_prompt(
                 task=task,
                 candidates=candidates,
+                all_skill_frontmatter=all_skill_frontmatter,
                 disclosed_snippets=disclosed_snippets,
                 step_results=[],
                 max_context_tokens=self.config.model.max_context_tokens,
@@ -475,6 +511,7 @@ class Orchestrator:
         )
 
         accumulated_results: list[StepExecutionResult] = []
+        consecutive_self_handoff_turns = 0
         with install_signal_handlers() as signal_state:
             for turn_index in range(1, max_turns + 1):
                 if signal_state.stop_requested:
@@ -492,6 +529,7 @@ class Orchestrator:
                 prompt_data = build_prompt(
                     task=task,
                     candidates=candidates,
+                    all_skill_frontmatter=all_skill_frontmatter,
                     disclosed_snippets=disclosed_snippets,
                     step_results=accumulated_results,
                     max_context_tokens=self.config.model.max_context_tokens,
@@ -571,9 +609,13 @@ class Orchestrator:
                             usage=LlmTranscriptUsage(),
                             decode_success=False,
                             selected_skill=None,
+                            raw_action_types=[],
                             planned_action_types=[],
                             required_disclosure_paths=[],
                             response_kind="response",
+                            response_kind_reason=(
+                                "Mapped to response because the LLM request failed before decoding."
+                            ),
                             error=self._sanitize_and_redact(str(exc)),
                             retryable=retryable,
                         )
@@ -638,6 +680,7 @@ class Orchestrator:
                     output_tokens=(llm_meta or {}).get("output_tokens"),
                     latency_ms=(llm_meta or {}).get("latency_ms"),
                 )
+                raw_action_types = self._extract_raw_action_types(llm_response_data)
 
                 decision: ModelDecision
                 try:
@@ -661,9 +704,14 @@ class Orchestrator:
                         usage=usage,
                         decode_success=False,
                         selected_skill=None,
+                        raw_action_types=raw_action_types,
                         planned_action_types=[],
                         required_disclosure_paths=[],
                         response_kind="response",
+                        response_kind_reason=(
+                            "Mapped to response because decoding failed "
+                            "before action normalization."
+                        ),
                         error=self._sanitize_and_redact(str(exc)),
                         retryable=None,
                     )
@@ -698,6 +746,7 @@ class Orchestrator:
                     list[ActionType],
                     [action.type for action in decision.planned_actions],
                 )
+                response_kind = self._classify_response_kind(planned_action_types)
                 success_record = LlmTranscriptRecord(
                     turn_index=turn_index,
                     attempt=int((llm_meta or {}).get("attempt", last_attempt)),
@@ -712,9 +761,13 @@ class Orchestrator:
                     usage=usage,
                     decode_success=True,
                     selected_skill=decision.selected_skill,
+                    raw_action_types=raw_action_types,
                     planned_action_types=planned_action_types,
                     required_disclosure_paths=decision.required_disclosure_paths,
-                    response_kind=self._classify_response_kind(planned_action_types),
+                    response_kind=response_kind,
+                    response_kind_reason=self._response_kind_reason(
+                        response_kind, planned_action_types
+                    ),
                     error=None,
                     retryable=None,
                 )
@@ -742,6 +795,45 @@ class Orchestrator:
                         "step_results": [item.model_dump() for item in step_results],
                     },
                 )
+
+                is_self_handoff_only = (
+                    bool(decision.planned_actions)
+                    and all(action.type == "call_skill" for action in decision.planned_actions)
+                    and all(
+                        str(action.params.get("skill_name", decision.selected_skill) or "").strip()
+                        == (decision.selected_skill or "")
+                        for action in decision.planned_actions
+                    )
+                )
+                if is_self_handoff_only:
+                    consecutive_self_handoff_turns += 1
+                    bus.emit(
+                        "self_handoff_detected",
+                        {
+                            "turn_index": turn_index,
+                            "selected_skill": decision.selected_skill,
+                            "count": consecutive_self_handoff_turns,
+                        },
+                    )
+                else:
+                    consecutive_self_handoff_turns = 0
+
+                if consecutive_self_handoff_turns >= 2:
+                    bus.emit(
+                        "run_failed",
+                        {
+                            "reason": "self_handoff_loop",
+                            "turn_index": turn_index,
+                            "selected_skill": decision.selected_skill,
+                        },
+                    )
+                    return RunResult(
+                        run_id=run_id,
+                        status="failed",
+                        message="Detected repeated self-handoff loop",
+                        events_path=sink.path,
+                        llm_transcript_path=llm_transcript_path,
+                    )
 
                 if decision.selected_skill:
                     target_skill = registry.by_name(skills, decision.selected_skill)

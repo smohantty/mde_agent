@@ -12,6 +12,7 @@ from agent.types import SkillMetadata
 @dataclass
 class SkillDefinition:
     metadata: SkillMetadata
+    frontmatter: dict[str, Any]
     skill_dir: Path
     skill_md_path: Path
     body: str
@@ -116,6 +117,7 @@ def parse_skill(skill_dir: Path) -> SkillDefinition:
 
     return SkillDefinition(
         metadata=metadata,
+        frontmatter=frontmatter,
         skill_dir=skill_dir,
         skill_md_path=skill_md_path,
         body=body,

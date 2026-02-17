@@ -18,6 +18,7 @@ class LlmTranscriptSink:
 
     def write(self, record: LlmTranscriptRecord) -> None:
         payload = record.model_dump(mode="json")
+        raw_action_types = self._join_list(payload.get("raw_action_types", []))
         planned_actions = self._join_list(payload.get("planned_action_types", []))
         disclosed_paths = self._join_list(payload.get("disclosed_paths", []))
         required_disclosure = self._join_list(payload.get("required_disclosure_paths", []))
@@ -35,7 +36,8 @@ class LlmTranscriptSink:
             f"Response Kind: {payload['response_kind']}",
             f"Decode Success: {'yes' if payload['decode_success'] else 'no'}",
             f"Selected Skill: {payload.get('selected_skill') or 'none'}",
-            f"Planned Action Types: {planned_actions}",
+            f"Raw Action Types (from model response): {raw_action_types}",
+            f"Normalized Action Types (decoder output): {planned_actions}",
             f"Disclosed Paths: {disclosed_paths}",
             f"Required Disclosure Paths: {required_disclosure}",
             f"Prompt Estimated Tokens: {payload['prompt_estimated_tokens']}",
@@ -54,10 +56,16 @@ class LlmTranscriptSink:
             ),
             f"Retryable: {retryable if retryable is not None else 'n/a'}",
             f"Error: {payload.get('error') or 'none'}",
-            "--- Prompt ---",
+            f"Response Kind Mapping: {payload.get('response_kind_reason') or 'n/a'}",
+            "",
+            "--- Request Prompt ---",
             str(payload["prompt_text"]),
-            "--- Response ---",
+            "--- Raw Model Response ---",
             str(payload.get("response_text") or ""),
+            "--- Decode Summary ---",
+            f"selected_skill={payload.get('selected_skill') or 'none'}",
+            f"response_kind={payload.get('response_kind')}",
+            f"normalized_actions={planned_actions}",
             "=== LLM ATTEMPT END ===",
             "",
         ]
