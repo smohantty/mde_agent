@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-ActionType = Literal["call_skill", "run_command", "ask_user", "finish"]
+ActionType = Literal["call_skill", "run_command", "ask_user", "finish", "mcp_call"]
 ResponseKind = Literal["skill_call", "tool_call", "response"]
 LlmTranscriptStatus = Literal["success", "request_failed", "decode_failed"]
 LlmCallSite = Literal["decision_loop", "final_answer_synthesis", "unspecified"]

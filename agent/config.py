@@ -66,11 +66,25 @@ class LoggingConfig(BaseModel):
     llm_transcript_filename: str = "llm_transcript.log"
 
 
+class McpServerConfig(BaseModel):
+    command: str
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    timeout_seconds: int = 30
+
+
+class McpConfig(BaseModel):
+    servers: dict[str, McpServerConfig] = Field(default_factory=dict)
+    enabled: bool = True
+    tool_call_timeout_seconds: int = 60
+
+
 class AgentConfig(BaseModel):
     model: ModelConfig = Field(default_factory=ModelConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    mcp: McpConfig = Field(default_factory=McpConfig)
 
 
 class ConfigError(RuntimeError):

@@ -96,7 +96,7 @@ class Orchestrator:
     def _classify_response_kind(action_types: list[ActionType]) -> ResponseKind:
         if any(action == "call_skill" for action in action_types):
             return "skill_call"
-        if any(action == "run_command" for action in action_types):
+        if any(action in ("run_command", "mcp_call") for action in action_types):
             return "tool_call"
         return "response"
 
@@ -105,7 +105,7 @@ class Orchestrator:
         if kind == "skill_call":
             return "Mapped to skill_call because normalized actions include call_skill."
         if kind == "tool_call":
-            return "Mapped to tool_call because normalized actions include run_command."
+            return "Mapped to tool_call because normalized actions include run_command or mcp_call."
         if action_types:
             return "Mapped to response because normalized actions have no call_skill/run_command."
         return "Mapped to response because no normalized actions were decoded."
@@ -809,6 +809,7 @@ class Orchestrator:
         retry_policy: str,
         run_dir: Path,
         turn_index: int,
+        mcp_manager: Any | None = None,
     ) -> tuple[list[StepExecutionResult], bool]:
         step_results: list[StepExecutionResult] = []
         should_finish = False
@@ -956,6 +957,105 @@ class Orchestrator:
                     return step_results, False
                 continue
 
+            if action.type == "mcp_call":
+                tool_name = str(action.params.get("tool_name", "")).strip()
+                arguments = action.params.get("arguments", {})
+                if not isinstance(arguments, dict):
+                    arguments = {}
+
+                if not tool_name or mcp_manager is None:
+                    reason = "missing_tool_name" if not tool_name else "mcp_not_available"
+                    step_results.append(
+                        StepExecutionResult(
+                            step_id=step_id,
+                            exit_code=1,
+                            stdout_summary="",
+                            stderr_summary=f"MCP call failed: {reason}",
+                            retry_count=0,
+                            status="failed",
+                        )
+                    )
+                    bus.emit(
+                        "mcp_tool_call_failed",
+                        {
+                            "step_id": step_id,
+                            "tool_name": tool_name,
+                            "error": reason,
+                        },
+                    )
+                    return step_results, False
+
+                bus.emit(
+                    "mcp_tool_call_started",
+                    {
+                        "step_id": step_id,
+                        "tool_name": tool_name,
+                        "arguments_keys": list(arguments.keys()),
+                    },
+                )
+
+                try:
+                    mcp_result = mcp_manager.call_tool(
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        timeout_seconds=self.config.mcp.tool_call_timeout_seconds,
+                    )
+                except Exception as exc:
+                    step_results.append(
+                        StepExecutionResult(
+                            step_id=step_id,
+                            exit_code=1,
+                            stdout_summary="",
+                            stderr_summary=f"MCP call failed: {exc}",
+                            retry_count=0,
+                            status="failed",
+                        )
+                    )
+                    bus.emit(
+                        "mcp_tool_call_failed",
+                        {
+                            "step_id": step_id,
+                            "tool_name": tool_name,
+                            "error": str(exc),
+                        },
+                    )
+                    return step_results, False
+
+                mcp_status = "failed" if mcp_result.is_error else "success"
+                mcp_exit = 1 if mcp_result.is_error else 0
+                mcp_artifact = write_artifact(
+                    run_dir,
+                    f"artifacts/turn_{turn_index}_{step_id}_mcp_stdout.txt",
+                    mcp_result.raw_text,
+                )
+                step_results.append(
+                    StepExecutionResult(
+                        step_id=step_id,
+                        exit_code=mcp_exit,
+                        stdout_summary=summarize_text(mcp_result.raw_text),
+                        stderr_summary=(
+                            "MCP tool returned error" if mcp_result.is_error else ""
+                        ),
+                        retry_count=0,
+                        status=mcp_status,
+                        stdout_artifact=str(mcp_artifact),
+                    )
+                )
+                bus.emit(
+                    "mcp_tool_call_completed",
+                    {
+                        "step_id": step_id,
+                        "tool_name": tool_name,
+                        "server": mcp_result.server_name,
+                        "status": mcp_status,
+                        "is_error": mcp_result.is_error,
+                        "stdout_artifact": str(mcp_artifact),
+                    },
+                )
+                if mcp_status == "failed":
+                    return step_results, False
+                continue
+
             step_results.append(
                 StepExecutionResult(
                     step_id=step_id,
@@ -1091,6 +1191,39 @@ class Orchestrator:
                 bus, stage1.stage, stage1.snippets, stage1.total_bytes, stage1.total_tokens
             )
 
+        # -- MCP server initialization --
+        from agent.mcp.client import McpManager
+
+        mcp_manager: McpManager | None = None
+        mcp_tool_catalog: list[dict[str, Any]] = []
+        if self.config.mcp.enabled and self.config.mcp.servers:
+            mcp_manager = McpManager()
+            try:
+                discovered_tools = mcp_manager.connect_all(self.config.mcp.servers)
+                mcp_tool_catalog = [
+                    {
+                        "name": t.name,
+                        "description": t.description,
+                        "server": t.server_name,
+                        "input_schema": t.input_schema,
+                    }
+                    for t in discovered_tools
+                ]
+                bus.emit(
+                    "mcp_servers_connected",
+                    {
+                        "server_count": len(self.config.mcp.servers),
+                        "tool_count": len(discovered_tools),
+                        "tools": [
+                            {"name": t.name, "server": t.server_name}
+                            for t in discovered_tools
+                        ],
+                    },
+                )
+            except Exception as exc:
+                bus.emit("mcp_connection_failed", {"error": str(exc)})
+                mcp_manager = None
+
         if dry_run:
             dry_run_native_tools = self.config.model.structured_output_mode in (
                 "native_with_json_fallback",
@@ -1105,6 +1238,7 @@ class Orchestrator:
                 max_context_tokens=self.config.model.max_context_tokens,
                 response_headroom_tokens=self.config.model.response_headroom_tokens,
                 use_native_tools=dry_run_native_tools,
+                mcp_tools=mcp_tool_catalog or None,
             )
             bus.emit(
                 "prompt_budget_computed",
@@ -1162,7 +1296,8 @@ class Orchestrator:
         accumulated_results: list[StepExecutionResult] = []
         consecutive_self_handoff_turns = 0
         blocked_self_handoff_skill: str | None = None
-        with install_signal_handlers() as signal_state:
+        try:
+          with install_signal_handlers() as signal_state:
             for turn_index in range(1, max_turns + 1):
                 if signal_state.stop_requested:
                     bus.emit("signal_received", {"signal": signal_state.signal_name})
@@ -1200,6 +1335,7 @@ class Orchestrator:
                     max_context_tokens=self.config.model.max_context_tokens,
                     response_headroom_tokens=self.config.model.response_headroom_tokens,
                     use_native_tools=use_native_tools,
+                    mcp_tools=mcp_tool_catalog or None,
                 )
                 if blocked_self_handoff_skill:
                     bus.emit(
@@ -1284,6 +1420,7 @@ class Orchestrator:
                             self.config.model.response_headroom_tokens
                         ),
                         use_native_tools=False,
+                        mcp_tools=mcp_tool_catalog or None,
                     )
                     invocation_result = self._invoke_llm_with_logging(
                         provider_router=provider_router,
@@ -1462,6 +1599,7 @@ class Orchestrator:
                     retry_policy=self.config.runtime.on_step_failure,
                     run_dir=run_dir,
                     turn_index=turn_index,
+                    mcp_manager=mcp_manager,
                 )
                 accumulated_results.extend(step_results)
                 bus.emit(
@@ -1571,11 +1709,18 @@ class Orchestrator:
                         llm_transcript_path=llm_transcript_path,
                     )
 
-        bus.emit("run_failed", {"reason": "max_turns_exceeded", "max_turns": max_turns})
-        return RunResult(
-            run_id=run_id,
-            status="failed",
-            message="Max turns exceeded",
-            events_path=sink.path,
-            llm_transcript_path=llm_transcript_path,
-        )
+          bus.emit("run_failed", {"reason": "max_turns_exceeded", "max_turns": max_turns})
+          return RunResult(
+              run_id=run_id,
+              status="failed",
+              message="Max turns exceeded",
+              events_path=sink.path,
+              llm_transcript_path=llm_transcript_path,
+          )
+        finally:
+            if mcp_manager is not None:
+                try:
+                    mcp_manager.close_all()
+                    bus.emit("mcp_servers_disconnected", {})
+                except Exception:
+                    pass

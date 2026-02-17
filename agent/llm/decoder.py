@@ -23,6 +23,11 @@ _BASE_ACTION_TYPE_ALIASES: dict[str, str] = {
     "format_output": "finish",
     "summarize_output": "finish",
     "complete": "finish",
+    "mcp_tool": "mcp_call",
+    "mcp_invoke": "mcp_call",
+    "call_mcp": "mcp_call",
+    "use_mcp_tool": "mcp_call",
+    "mcp": "mcp_call",
 }
 
 
@@ -186,6 +191,11 @@ def _normalize_action_step(
             normalized_step["type"] = "ask_user"
             action_label = raw_type or normalized_type or "unknown"
             normalized_step["params"] = {"message": f"Non-executable action: {action_label}"}
+    elif normalized_type == "mcp_call":
+        tool_name = params.get("tool_name") or params.get("name") or ""
+        if not tool_name:
+            normalized_step["type"] = "ask_user"
+            normalized_step["params"] = {"message": "mcp_call missing tool_name"}
     elif normalized_type not in {"ask_user", "finish"}:
         normalized_step["type"] = "ask_user"
         action_label = raw_type or "unknown"

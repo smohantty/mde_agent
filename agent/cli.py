@@ -120,6 +120,25 @@ def run_command(
             attempt = payload.get("attempt")
             retryable = payload.get("retryable")
             console.print(f"[yellow]llm-retry[/yellow] attempt={attempt} retryable={retryable}")
+        elif et == "mcp_servers_connected":
+            console.print(
+                f"[cyan]mcp[/cyan] connected "
+                f"servers={payload.get('server_count')} tools={payload.get('tool_count')}"
+            )
+        elif et == "mcp_tool_call_started":
+            console.print(f"[cyan]mcp[/cyan] calling tool={payload.get('tool_name')}")
+        elif et == "mcp_tool_call_completed":
+            console.print(
+                f"[cyan]mcp[/cyan] tool={payload.get('tool_name')} "
+                f"status={payload.get('status')}"
+            )
+        elif et == "mcp_tool_call_failed":
+            console.print(
+                f"[red]mcp[/red] tool={payload.get('tool_name')} "
+                f"error={payload.get('error')}"
+            )
+        elif et == "mcp_connection_failed":
+            console.print(f"[red]mcp[/red] connection failed: {payload.get('error')}")
         elif et == "run_failed":
             console.print(f"[red]failed[/red] reason={payload.get('reason')}")
         elif et == "run_finished":

@@ -19,12 +19,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mcp = [
+  "mcp>=1.0.0",
+]
 dev = [
   "pytest>=8.2.0",
   "pytest-mock>=3.14.0",
   "syrupy>=4.6.0",
   "ruff>=0.6.0",
   "pyright>=1.1.380",
+  "mcp>=1.0.0",
 ]
 
 [project.scripts]

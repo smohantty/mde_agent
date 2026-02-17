@@ -72,6 +72,7 @@ def build_agent_decision_tool_schema() -> dict[str, Any]:
                                     "call_skill",
                                     "ask_user",
                                     "finish",
+                                    "mcp_call",
                                 ],
                             },
                             "params": {"type": "object"},

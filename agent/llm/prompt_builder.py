@@ -25,6 +25,7 @@ def build_prompt(
     response_headroom_tokens: int,
     blocked_skill_name: str | None = None,
     use_native_tools: bool = False,
+    mcp_tools: list[dict[str, Any]] | None = None,
 ) -> PromptBuildResult:
     run_state = {
         "executed_steps": [item.model_dump() for item in step_results],
@@ -42,9 +43,13 @@ def build_prompt(
         "set selected_skill to null and do not emit call_skill. "
         "Avoid repetitive self-handoffs (calling the same selected skill "
         "repeatedly without new work). "
-        "Allowed action types are EXACTLY: run_command, call_skill, ask_user, finish. "
+        "Allowed action types are EXACTLY: "
+        "run_command, call_skill, ask_user, finish, mcp_call. "
         "Do not invent action types. "
         "For run_command, params MUST include a shell command in params.command. "
+        "For mcp_call, params MUST include tool_name (string) and "
+        "arguments (object matching the tool input_schema). "
+        "Use mcp_call ONLY for tools listed in MCP_TOOLS. "
         "If the task is file-analysis, prefer run_command with rg/sed/head/tail commands. "
         "When searching files, exclude noisy directories like .venv, runs, and .git. "
         "Use ask_user only when truly blocked by missing required input. "
@@ -95,6 +100,11 @@ def build_prompt(
                 f"ALL_SKILL_FRONTMATTER:\n{json.dumps(all_skill_frontmatter, ensure_ascii=True)}",
                 f"CANDIDATE_SKILLS:\n{json.dumps(candidates_payload, ensure_ascii=True)}",
                 f"DISCLOSED_CONTEXT:\n{json.dumps(disclosed_payload, ensure_ascii=True)}",
+                (
+                    f"MCP_TOOLS:\n{json.dumps(mcp_tools, ensure_ascii=True)}"
+                    if mcp_tools
+                    else ""
+                ),
             ]
             if section
         ]

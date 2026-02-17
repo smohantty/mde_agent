@@ -33,7 +33,7 @@ def test_planned_actions_schema_enumerates_canonical_types() -> None:
     schema = build_agent_decision_tool_schema()
     items = schema["input_schema"]["properties"]["planned_actions"]["items"]
     action_enum = items["properties"]["type"]["enum"]
-    assert set(action_enum) == {"run_command", "call_skill", "ask_user", "finish"}
+    assert set(action_enum) == {"run_command", "call_skill", "ask_user", "finish", "mcp_call"}
 
 
 # ---------- prompt builder tests ----------
