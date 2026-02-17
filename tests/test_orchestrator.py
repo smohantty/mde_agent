@@ -80,3 +80,10 @@ def test_orchestrator_missing_key_fails_fast(tmp_path: Path, monkeypatch) -> Non
         and event["payload"].get("reason") == "missing_provider_api_key"
         for event in payloads
     )
+
+
+def test_normalize_markdown_find_command() -> None:
+    normalized = Orchestrator._normalize_command("find . -type f -name '*.md' | head -20")
+    assert 'rg --files -g "*.md"' in normalized
+    assert '!.venv/**' in normalized
+    assert "| head -n 20" in normalized

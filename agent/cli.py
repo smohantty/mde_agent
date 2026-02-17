@@ -17,6 +17,7 @@ from agent.config import (
 )
 from agent.runtime.orchestrator import Orchestrator
 from agent.skills.registry import SkillRegistry
+from agent.types import EventRecord
 
 app = typer.Typer(help="Autonomous skill-native agent")
 skills_app = typer.Typer(help="Inspect and list skill packs")
@@ -46,6 +47,9 @@ def run_command(
     dry_run: Annotated[
         bool, typer.Option(help="Only prefilter/disclose/build prompt, no LLM or command execution")
     ] = False,
+    show_progress: Annotated[
+        bool, typer.Option(help="Show concise progress while the agent executes")
+    ] = True,
     max_turns: Annotated[int | None, typer.Option(help="Override max turn count")] = None,
     config: Annotated[Path | None, typer.Option(help="Path to config file")] = None,
 ) -> None:
@@ -54,12 +58,71 @@ def run_command(
     cfg.logging.debug_llm_bodies = debug_llm
 
     orchestrator = Orchestrator(cfg)
+
+    def _render_progress(event: EventRecord) -> None:
+        if not show_progress:
+            return
+        payload = event.payload
+        et = event.event_type
+        if et == "run_started":
+            console.print(
+                f"[cyan]start[/cyan] task={payload.get('task')} provider={payload.get('provider')}"
+            )
+        elif et == "skill_catalog_loaded":
+            loaded = payload.get("skills_count")
+            skills_dir_label = payload.get("skills_dir")
+            console.print(f"[cyan]skills[/cyan] loaded={loaded} dir={skills_dir_label}")
+        elif et == "skill_prefilter_completed":
+            candidates = payload.get("candidates", [])
+            top = candidates[0]["skill_name"] if candidates else "none"
+            console.print(
+                f"[cyan]router[/cyan] candidates={payload.get('candidate_count')} top={top}"
+            )
+        elif et == "skill_disclosure_loaded":
+            stage = payload.get("stage")
+            item_count = len(payload.get("paths", []))
+            console.print(f"[cyan]disclosure[/cyan] stage={stage} items={item_count}")
+        elif et == "llm_request_sent":
+            turn = payload.get("turn_index")
+            attempt = payload.get("attempt")
+            console.print(f"[cyan]llm[/cyan] turn={turn} attempt={attempt}")
+        elif et == "llm_response_received":
+            meta = payload.get("meta", {})
+            latency_ms = meta.get("latency_ms")
+            output_tokens = meta.get("output_tokens")
+            console.print(
+                f"[cyan]llm[/cyan] response latency_ms={latency_ms} "
+                f"output_tokens={output_tokens}"
+            )
+        elif et == "llm_decision_decoded":
+            turn = payload.get("turn_index")
+            skill = payload.get("selected_skill")
+            console.print(f"[cyan]decision[/cyan] turn={turn} skill={skill}")
+        elif et == "skill_step_executed":
+            step_id = payload.get("step_id")
+            step_type = payload.get("type")
+            status = payload.get("status")
+            console.print(f"[cyan]step[/cyan] {step_id} type={step_type} status={status}")
+        elif et == "step_retry_scheduled":
+            step_id = payload.get("step_id")
+            retry_count = payload.get("retry_count")
+            console.print(f"[yellow]retry[/yellow] {step_id} count={retry_count}")
+        elif et == "llm_retry_scheduled":
+            attempt = payload.get("attempt")
+            retryable = payload.get("retryable")
+            console.print(f"[yellow]llm-retry[/yellow] attempt={attempt} retryable={retryable}")
+        elif et == "run_failed":
+            console.print(f"[red]failed[/red] reason={payload.get('reason')}")
+        elif et == "run_finished":
+            console.print(f"[green]finished[/green] turn={payload.get('turn_index')}")
+
     result = orchestrator.run(
         task=task,
         skills_dir=skills_dir,
         provider_override=provider,
         dry_run=dry_run,
         max_turns_override=max_turns,
+        on_event=_render_progress,
     )
 
     if result.status == "success":

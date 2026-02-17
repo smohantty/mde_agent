@@ -30,9 +30,14 @@ def build_prompt(
     disclosed_payload = disclosed_snippets
 
     instruction = (
-        "You are an autonomous agent. Return a JSON object with keys: "
+        "You are an autonomous agent. Return ONLY a JSON object (no markdown fences) with keys: "
         "selected_skill, reasoning_summary, required_disclosure_paths, planned_actions. "
-        "Each planned action must include type, params, expected_output."
+        "Allowed action types are EXACTLY: run_command, call_skill, ask_user, finish. "
+        "Do not invent action types. "
+        "For run_command, params MUST include a shell command in params.command. "
+        "If the task is file-analysis, prefer run_command with rg/sed/head/tail commands. "
+        "When searching files, exclude noisy directories like .venv, runs, and .git. "
+        "Use ask_user only when truly blocked by missing required input."
     )
 
     prompt = "\n\n".join(

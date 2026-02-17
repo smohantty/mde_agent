@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,7 +23,7 @@ from agent.skills.disclosure import DisclosureEngine
 from agent.skills.registry import SkillRegistry
 from agent.skills.router import SkillRouter
 from agent.storage.run_store import create_run_dir, generate_run_id, write_artifact
-from agent.types import ActionStep, ModelDecision, SkillCandidate, StepExecutionResult
+from agent.types import ActionStep, EventRecord, ModelDecision, SkillCandidate, StepExecutionResult
 
 
 @dataclass
@@ -35,6 +37,20 @@ class RunResult:
 class Orchestrator:
     def __init__(self, config: AgentConfig) -> None:
         self.config = config
+
+    @staticmethod
+    def _normalize_command(command: str) -> str:
+        """Rewrite noisy markdown discovery commands to safer workspace-scoped rg forms."""
+        normalized = command.strip()
+        pattern = r"""find\s+\.\s+-type\s+f\s+-name\s+['"]\*\.md['"]"""
+        if re.search(pattern, normalized):
+            head_match = re.search(r"head\s+-(?:n\s*)?(\d+)", normalized)
+            limit = int(head_match.group(1)) if head_match else 20
+            return (
+                'rg --files -g "*.md" -g "!.venv/**" -g "!runs/**" -g "!.git/**" '
+                f"| head -n {limit}"
+            )
+        return normalized
 
     def _emit_disclosure(
         self,
@@ -108,7 +124,8 @@ class Orchestrator:
                     )
                     return step_results, False
 
-                execution = executor.run(command)
+                normalized_command = self._normalize_command(command)
+                execution = executor.run(normalized_command)
                 retry_count = 0
                 if (
                     execution.exit_code != 0
@@ -117,9 +134,13 @@ class Orchestrator:
                     retry_count = 1
                     bus.emit(
                         "step_retry_scheduled",
-                        {"step_id": step_id, "command": command, "retry_count": retry_count},
+                        {
+                            "step_id": step_id,
+                            "command": normalized_command,
+                            "retry_count": retry_count,
+                        },
                     )
-                    execution = executor.run(command)
+                    execution = executor.run(normalized_command)
 
                 status = "success" if execution.exit_code == 0 else "failed"
                 result = StepExecutionResult(
@@ -136,6 +157,7 @@ class Orchestrator:
                     {
                         "step_id": step_id,
                         "type": action.type,
+                        "command": normalized_command,
                         "status": status,
                         "exit_code": execution.exit_code,
                         "stdout": result.stdout_summary,
@@ -196,6 +218,7 @@ class Orchestrator:
         provider_override: str | None = None,
         dry_run: bool = False,
         max_turns_override: int | None = None,
+        on_event: Callable[[EventRecord], None] | None = None,
     ) -> RunResult:
         run_id = generate_run_id()
         trace_id = uuid.uuid4().hex
@@ -206,6 +229,7 @@ class Orchestrator:
             context=EventContext(run_id=run_id, trace_id=trace_id),
             redact=self.config.logging.redact_secrets,
             sanitize=self.config.logging.sanitize_control_chars,
+            on_emit=on_event,
         )
 
         provider_name = provider_override or self.config.model.provider

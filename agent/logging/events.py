@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -23,11 +25,13 @@ class EventBus:
         context: EventContext,
         redact: bool = True,
         sanitize: bool = True,
+        on_emit: Callable[[EventRecord], None] | None = None,
     ) -> None:
         self._sink = sink
         self._context = context
         self._redact = redact
         self._sanitize = sanitize
+        self._on_emit = on_emit
 
     def _clean_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         cleaned: dict[str, Any] = {}
@@ -58,4 +62,7 @@ class EventBus:
             redaction_mode=redaction_mode,
         )
         self._sink.write(event)
+        if self._on_emit is not None:
+            with suppress(Exception):
+                self._on_emit(event)
         return event
