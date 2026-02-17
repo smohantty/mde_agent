@@ -1,0 +1,11 @@
+{
+  "contains_events": [
+    "run_started",
+    "skill_catalog_loaded",
+    "skill_prefilter_completed",
+    "skill_disclosure_loaded",
+    "prompt_budget_computed",
+    "prompt_composed",
+    "run_finished"
+  ]
+}

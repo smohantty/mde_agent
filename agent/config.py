@@ -1,0 +1,130 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any, Literal
+
+import yaml
+from pydantic import BaseModel, Field, ValidationError
+
+ProviderName = Literal["anthropic", "gemini"]
+
+
+class ProviderConfig(BaseModel):
+    api_key_env: str
+
+
+class ModelConfig(BaseModel):
+    provider: ProviderName = "anthropic"
+    name: str = "claude-sonnet-4-5"
+    max_tokens: int = 4096
+    max_context_tokens: int = 32000
+    response_headroom_tokens: int = 2000
+    structured_output_mode: str = "native_with_json_fallback"
+    providers: dict[ProviderName, ProviderConfig] = Field(
+        default_factory=lambda: {
+            "anthropic": ProviderConfig(api_key_env="ANTHROPIC_API_KEY"),
+            "gemini": ProviderConfig(api_key_env="GEMINI_API_KEY"),
+        }
+    )
+
+
+class RuntimeConfig(BaseModel):
+    profile: str = "permissive"
+    shell_linux: str = "/bin/bash"
+    shell_windows: str = "pwsh"
+    timeout_seconds: int = 120
+    max_turns: int = 8
+    max_llm_retries: int = 3
+    retry_base_delay_seconds: float = 1.0
+    retry_max_delay_seconds: float = 8.0
+    on_step_failure: str = "retry_once_then_fallback_then_abort"
+    signal_grace_seconds: int = 10
+
+
+class SkillsConfig(BaseModel):
+    dir: str = "./skills"
+    prefilter_top_k: int = 8
+    prefilter_min_score: int = 55
+    prefilter_zero_candidate_strategy: Literal["fallback_all_skills", "fail_fast"] = (
+        "fallback_all_skills"
+    )
+    disclosure_max_reference_bytes: int = 120000
+    disclosure_max_reference_tokens: int = 4000
+
+
+class LoggingConfig(BaseModel):
+    level: str = "info"
+    jsonl_dir: str = "./runs"
+    run_id_pattern: str = "YYYYMMDD-HHMMSS-<short-uuid>"
+    debug_llm_bodies: bool = False
+    sanitize_control_chars: bool = True
+    redact_secrets: bool = True
+
+
+class AgentConfig(BaseModel):
+    model: ModelConfig = Field(default_factory=ModelConfig)
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    skills: SkillsConfig = Field(default_factory=SkillsConfig)
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
+
+
+class ConfigError(RuntimeError):
+    pass
+
+
+def discover_config_path(config_override: Path | None = None) -> Path | None:
+    if config_override is not None:
+        return config_override.resolve()
+
+    candidates = [
+        Path("./agent.yaml"),
+        Path("~/.config/agent/agent.yaml").expanduser(),
+    ]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return None
+
+
+def _load_yaml(path: Path) -> dict[str, Any]:
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ConfigError(f"Config file must contain a mapping: {path}")
+    return raw
+
+
+def load_config(config_override: Path | None = None) -> AgentConfig:
+    path = discover_config_path(config_override)
+    if path is None:
+        return AgentConfig()
+    if not path.exists():
+        raise ConfigError(f"Config file not found: {path}")
+
+    data = _load_yaml(path)
+    try:
+        return AgentConfig.model_validate(data)
+    except ValidationError as exc:
+        raise ConfigError(f"Invalid config at {path}: {exc}") from exc
+
+
+def write_default_config(path: Path, overwrite: bool = False) -> None:
+    if path.exists() and not overwrite:
+        raise ConfigError(f"Config file already exists: {path}")
+
+    config = AgentConfig()
+    serialized = yaml.safe_dump(config.model_dump(mode="python"), sort_keys=False)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(serialized, encoding="utf-8")
+
+
+def get_provider_api_key(config: AgentConfig, provider: ProviderName) -> str | None:
+    env_name = config.model.providers[provider].api_key_env
+    value = os.getenv(env_name)
+    if value is None:
+        return None
+    cleaned = value.strip()
+    return cleaned or None

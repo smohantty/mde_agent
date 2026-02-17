@@ -1,0 +1,8 @@
+{
+  "selected_skill": "workspace-inventory",
+  "reasoning_summary": "Finished",
+  "required_disclosure_paths": [],
+  "planned_actions": [
+    {"type": "finish", "params": {}, "expected_output": null}
+  ]
+}
