@@ -25,6 +25,15 @@ export ANTHROPIC_API_KEY="your_key"
 export GEMINI_API_KEY="your_key"
 ```
 
+Or create a local `.env` file (auto-loaded by the agent):
+
+```bash
+cat > .env <<'EOF'
+ANTHROPIC_API_KEY=your_key
+GEMINI_API_KEY=your_key
+EOF
+```
+
 Windows PowerShell:
 
 ```powershell

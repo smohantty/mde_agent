@@ -6,6 +6,10 @@ Required env var:
 
 - `ANTHROPIC_API_KEY`
 
+Fallback file (auto-read by Python when env var is not set):
+
+- `./.env` containing `ANTHROPIC_API_KEY=...`
+
 Linux/macOS:
 
 ```bash
@@ -23,6 +27,10 @@ $env:ANTHROPIC_API_KEY="your_anthropic_key"
 Required env var:
 
 - `GEMINI_API_KEY`
+
+Fallback file (auto-read by Python when env var is not set):
+
+- `./.env` containing `GEMINI_API_KEY=...`
 
 Linux/macOS:
 
@@ -42,4 +50,5 @@ If the selected provider key is missing, the run fails fast with `missing_provid
 
 ## Security note
 
-API keys are environment-variable only and are never written to config files or logs.
+API keys are loaded from environment variables first, then `./.env` fallback values.
+They are never written to config files or logs.

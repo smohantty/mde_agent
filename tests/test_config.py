@@ -39,3 +39,21 @@ def test_provider_api_key_lookup(monkeypatch) -> None:
     config = AgentConfig()
     monkeypatch.setenv("ANTHROPIC_API_KEY", " abc ")
     assert get_provider_api_key(config, "anthropic") == "abc"
+
+
+def test_provider_api_key_lookup_from_dotenv(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=from-dotenv\n", encoding="utf-8")
+
+    config = AgentConfig()
+    assert get_provider_api_key(config, "anthropic") == "from-dotenv"
+
+
+def test_provider_api_key_env_overrides_dotenv(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=from-dotenv\n", encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "from-env")
+
+    config = AgentConfig()
+    assert get_provider_api_key(config, "anthropic") == "from-env"

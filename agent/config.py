@@ -75,6 +75,43 @@ class ConfigError(RuntimeError):
     pass
 
 
+def _parse_dotenv_line(line: str) -> tuple[str, str] | None:
+    text = line.strip()
+    if not text or text.startswith("#"):
+        return None
+    if text.startswith("export "):
+        text = text[len("export ") :].strip()
+    if "=" not in text:
+        return None
+
+    key, raw_value = text.split("=", 1)
+    key = key.strip()
+    if not key:
+        return None
+
+    value = raw_value.strip()
+    if value and value[0] in {"'", '"'} and value[-1:] == value[0]:
+        value = value[1:-1]
+    elif " #" in value:
+        value = value.split(" #", 1)[0].rstrip()
+
+    return key, value.strip()
+
+
+def _read_dotenv(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {}
+
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        parsed = _parse_dotenv_line(line)
+        if parsed is None:
+            continue
+        key, value = parsed
+        values[key] = value
+    return values
+
+
 def discover_config_path(config_override: Path | None = None) -> Path | None:
     if config_override is not None:
         return config_override.resolve()
@@ -126,6 +163,9 @@ def write_default_config(path: Path, overwrite: bool = False) -> None:
 def get_provider_api_key(config: AgentConfig, provider: ProviderName) -> str | None:
     env_name = config.model.providers[provider].api_key_env
     value = os.getenv(env_name)
+    if value is None:
+        dotenv_values = _read_dotenv(Path(".env"))
+        value = dotenv_values.get(env_name)
     if value is None:
         return None
     cleaned = value.strip()

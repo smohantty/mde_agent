@@ -57,6 +57,7 @@ def test_orchestrator_dry_run(tmp_path: Path) -> None:
 def test_orchestrator_missing_key_fails_fast(tmp_path: Path, monkeypatch) -> None:
     skills_dir = tmp_path / "skills"
     _create_demo_skill(skills_dir)
+    monkeypatch.chdir(tmp_path)
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
