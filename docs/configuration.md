@@ -25,3 +25,11 @@ uv run agent config validate --file agent.yaml
 - `logging.run_id_pattern`: human-readable run-id format
 - `logging.llm_transcript_enabled`: enable per-run LLM transcript logging
 - `logging.llm_transcript_filename`: transcript filename under each run directory
+- `mcp.enabled`: enable MCP server connections (default: `true`)
+- `mcp.tool_call_timeout_seconds`: timeout for individual MCP tool calls
+- `mcp.servers`: map of server name → `McpServerConfig`
+
+## See also
+
+- [Architecture: Configuration Model](architecture.md#configuration-model) — full class diagram of all config sections
+- [MCP Integration: Configuration](mcp-integration.md#configuration) — MCP server configuration examples

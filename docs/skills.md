@@ -32,3 +32,9 @@ default_action_params:
   list_files:
     command: rg --files
 ```
+
+## See also
+
+- [Architecture: Skill System](architecture.md#skill-system) — class diagram for SkillDefinition, SkillRegistry, SkillRouter, DisclosureEngine
+- [Decision Loop: Self-Handoff Detection & Recovery](decision-loop.md#self-handoff-detection--recovery) — how `default_action_params` are used in recovery
+- [Architecture: Action System](architecture.md#action-system) — canonical action types and decoder normalization

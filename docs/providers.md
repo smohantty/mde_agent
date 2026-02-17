@@ -52,3 +52,8 @@ If the selected provider key is missing, the run fails fast with `missing_provid
 
 API keys are loaded from environment variables first, then `./.env` fallback values.
 They are never written to config files or logs.
+
+## See also
+
+- [Architecture: Provider Abstraction](architecture.md#provider-abstraction) — class diagram and structured output modes
+- [Decision Loop: Native Tool Use Fallback](decision-loop.md#native-tool-use-fallback) — fallback flow between native and JSON modes
