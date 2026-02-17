@@ -48,6 +48,7 @@ Run output includes both:
 
 - `events.jsonl` (event stream)
 - `llm_transcript.log` (human-readable LLM request/response transcript, including decode mapping)
+  - includes `Raw Model Request` payload and `Raw Model Response`
 
 Prompt routing context includes `ALL_SKILL_FRONTMATTER` so the model can choose skills from the full catalog.
 Skill delegation is optional: the model can return `selected_skill: null` and complete via direct actions.

@@ -36,7 +36,8 @@ Core events include:
 Transcript entries include:
 
 - full prompt/response bodies (sanitized + redacted)
-- explicit request/response sections (`--- Request Prompt ---`, `--- Raw Model Response ---`)
+- explicit request/response sections (`--- Raw Model Request ---`, `--- Raw Model Response ---`)
+- raw request section includes provider payload wrapper (model/config/messages/contents)
 - provider/model/attempt metadata
 - token usage and latency
 - raw action types from model output and normalized action types after decoding

@@ -84,6 +84,7 @@ class LlmTranscriptRecord(BaseModel):
     provider: Literal["anthropic", "gemini"]
     model: str
     status: LlmTranscriptStatus
+    raw_request_text: str | None = None
     prompt_text: str
     response_text: str | None = None
     prompt_estimated_tokens: int

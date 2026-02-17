@@ -25,6 +25,8 @@ class LlmTranscriptSink:
         usage = payload.get("usage", {}) or {}
         budget = payload.get("budget", {}) or {}
         retryable = payload.get("retryable")
+        raw_request = str(payload.get("raw_request_text") or payload["prompt_text"])
+        prompt_text = str(payload["prompt_text"])
 
         block = [
             "=== LLM ATTEMPT START ===",
@@ -58,8 +60,10 @@ class LlmTranscriptSink:
             f"Error: {payload.get('error') or 'none'}",
             f"Response Kind Mapping: {payload.get('response_kind_reason') or 'n/a'}",
             "",
+            "--- Raw Model Request ---",
+            raw_request,
             "--- Request Prompt ---",
-            str(payload["prompt_text"]),
+            prompt_text,
             "--- Raw Model Response ---",
             str(payload.get("response_text") or ""),
             "--- Decode Summary ---",

@@ -16,6 +16,7 @@ def test_transcript_sink_writes_readable_log(tmp_path: Path) -> None:
         provider="anthropic",
         model="claude-sonnet-4-5",
         status="success",
+        raw_request_text='{"model":"claude-sonnet-4-5"}',
         prompt_text="prompt",
         response_text="response",
         prompt_estimated_tokens=10,
@@ -40,6 +41,7 @@ def test_transcript_sink_writes_readable_log(tmp_path: Path) -> None:
     assert len(rows) == 1
     assert "Status: success" in rows[0]
     assert "Provider: anthropic" in rows[0]
+    assert "--- Raw Model Request ---" in rows[0]
     assert "--- Request Prompt ---" in rows[0]
     assert "--- Raw Model Response ---" in rows[0]
     assert "Response Kind Mapping:" in rows[0]

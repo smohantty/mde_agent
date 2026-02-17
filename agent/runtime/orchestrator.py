@@ -126,6 +126,39 @@ class Orchestrator:
         return normalized
 
     @staticmethod
+    def _build_raw_model_request(
+        *,
+        provider: str,
+        model: str,
+        max_tokens: int,
+        prompt: str,
+        attempt: int,
+    ) -> dict[str, Any]:
+        if provider == "anthropic":
+            return {
+                "attempt": attempt,
+                "model": model,
+                "max_tokens": max_tokens,
+                "messages": [{"role": "user", "content": prompt}],
+            }
+        if provider == "gemini":
+            return {
+                "attempt": attempt,
+                "model": model,
+                "contents": prompt,
+                "config": {
+                    "response_mime_type": "application/json",
+                    "max_output_tokens": max_tokens,
+                },
+            }
+        return {
+            "attempt": attempt,
+            "model": model,
+            "max_tokens": max_tokens,
+            "prompt": prompt,
+        }
+
+    @staticmethod
     def _extract_raw_action_types(raw_response: dict[str, Any] | str | None) -> list[str]:
         if raw_response is None:
             return []
@@ -569,9 +602,21 @@ class Orchestrator:
                 llm_meta: dict[str, Any] | None = None
                 llm_error: Exception | None = None
                 last_attempt = 0
+                transcript_raw_request_text = ""
 
                 for attempt in range(1, self.config.runtime.max_llm_retries + 2):
                     last_attempt = attempt
+                    request_payload = self._build_raw_model_request(
+                        provider=provider_name,
+                        model=self.config.model.name,
+                        max_tokens=self.config.model.max_tokens,
+                        prompt=prompt_data.prompt,
+                        attempt=attempt,
+                    )
+                    transcript_raw_request_text = (
+                        self._sanitize_and_redact(json.dumps(request_payload, ensure_ascii=True))
+                        or ""
+                    )
                     bus.emit(
                         "llm_request_sent",
                         {
@@ -601,6 +646,7 @@ class Orchestrator:
                             provider=self._provider_name_for_transcript(provider_name),
                             model=self.config.model.name,
                             status="request_failed",
+                            raw_request_text=transcript_raw_request_text,
                             prompt_text=transcript_prompt_text,
                             response_text=None,
                             prompt_estimated_tokens=prompt_data.estimated_input_tokens,
@@ -696,6 +742,7 @@ class Orchestrator:
                         provider=self._provider_name_for_transcript(provider_name),
                         model=self.config.model.name,
                         status="decode_failed",
+                        raw_request_text=transcript_raw_request_text,
                         prompt_text=transcript_prompt_text,
                         response_text=response_text,
                         prompt_estimated_tokens=prompt_data.estimated_input_tokens,
@@ -753,6 +800,7 @@ class Orchestrator:
                     provider=self._provider_name_for_transcript(provider_name),
                     model=self.config.model.name,
                     status="success",
+                    raw_request_text=transcript_raw_request_text,
                     prompt_text=transcript_prompt_text,
                     response_text=response_text,
                     prompt_estimated_tokens=prompt_data.estimated_input_tokens,

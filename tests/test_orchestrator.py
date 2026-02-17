@@ -136,6 +136,7 @@ def test_orchestrator_writes_transcript_success(tmp_path: Path, monkeypatch) -> 
     transcript = transcript_path.read_text(encoding="utf-8")
     assert transcript.count("=== LLM ATTEMPT START ===") == 1
     assert "Status: success" in transcript
+    assert "--- Raw Model Request ---" in transcript
     assert "Decode Success: yes" in transcript
     assert "Response Kind: response" in transcript
     assert "Normalized Action Types (decoder output): finish" in transcript
