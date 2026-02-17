@@ -199,9 +199,9 @@ def test_orchestrator_finish_uses_summary_field(tmp_path: Path, monkeypatch) -> 
     assert result.final_summary_path.exists()
     assert "summary text" in result.final_summary_path.read_text(encoding="utf-8")
 
-    events = (
-        Path(cfg.logging.jsonl_dir) / result.run_id / "events.jsonl"
-    ).read_text(encoding="utf-8")
+    events = (Path(cfg.logging.jsonl_dir) / result.run_id / "events.jsonl").read_text(
+        encoding="utf-8"
+    )
     assert '"type": "finish"' in events
     assert '"message": "summary text"' in events
     assert '"event_type": "run_finished"' in events
@@ -541,3 +541,276 @@ def test_orchestrator_recovers_from_repeated_self_handoff_loop(tmp_path: Path, m
         for event in events
     )
     assert any(event["event_type"] == "run_finished" for event in events)
+
+
+def test_all_llm_calls_logged_across_call_sites(tmp_path: Path, monkeypatch) -> None:
+    skills_dir = tmp_path / "skills"
+    _create_demo_skill(skills_dir)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    calls = {"count": 0}
+
+    def _mock_complete_structured(
+        self,
+        provider: str,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        attempt: int,
+    ) -> LlmResult:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return LlmResult(
+                data={
+                    "selected_skill": None,
+                    "reasoning_summary": "collect data first",
+                    "required_disclosure_paths": [],
+                    "planned_actions": [
+                        {
+                            "type": "run_command",
+                            "params": {"command": "printf 'TOKEN_A\\n'"},
+                            "expected_output": None,
+                        }
+                    ],
+                },
+                meta=LlmRequestMeta(
+                    provider="anthropic",
+                    model=model,
+                    attempt=attempt,
+                    latency_ms=6,
+                    input_tokens=10,
+                    output_tokens=11,
+                ),
+            )
+        if calls["count"] == 2:
+            assert "TOKEN_A" in prompt
+            return LlmResult(
+                data={
+                    "selected_skill": None,
+                    "reasoning_summary": "finish main loop",
+                    "required_disclosure_paths": [],
+                    "planned_actions": [
+                        {
+                            "type": "run_command",
+                            "params": {"command": "printf 'TOKEN_B\\n'"},
+                            "expected_output": None,
+                        },
+                        {
+                            "type": "finish",
+                            "params": {"summary": "Intermediate summary"},
+                            "expected_output": None,
+                        },
+                    ],
+                },
+                meta=LlmRequestMeta(
+                    provider="anthropic",
+                    model=model,
+                    attempt=attempt,
+                    latency_ms=7,
+                    input_tokens=12,
+                    output_tokens=13,
+                ),
+            )
+        assert "TOOL_EVIDENCE" in prompt
+        return LlmResult(
+            data={"final_answer": "Final answer from synthesis."},
+            meta=LlmRequestMeta(
+                provider="anthropic",
+                model=model,
+                attempt=attempt,
+                latency_ms=8,
+                input_tokens=14,
+                output_tokens=15,
+            ),
+        )
+
+    monkeypatch.setattr(ProviderRouter, "complete_structured", _mock_complete_structured)
+
+    cfg = AgentConfig()
+    cfg.logging.jsonl_dir = str(tmp_path / "runs")
+    cfg.model.provider = "anthropic"
+    cfg.runtime.max_turns = 4
+    result = Orchestrator(cfg).run(task="summarize project", skills_dir=skills_dir)
+    assert result.status == "success"
+    assert calls["count"] == 3
+
+    run_dir = Path(cfg.logging.jsonl_dir) / result.run_id
+    events = [
+        json.loads(line)
+        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    request_events = [event for event in events if event["event_type"] == "llm_request_sent"]
+    response_events = [event for event in events if event["event_type"] == "llm_response_received"]
+    assert len(request_events) == 3
+    assert len(response_events) == 3
+    assert [event["payload"].get("call_site") for event in request_events] == [
+        "decision_loop",
+        "decision_loop",
+        "final_answer_synthesis",
+    ]
+    assert [event["payload"].get("call_site") for event in response_events] == [
+        "decision_loop",
+        "decision_loop",
+        "final_answer_synthesis",
+    ]
+
+    transcript = (run_dir / cfg.logging.llm_transcript_filename).read_text(encoding="utf-8")
+    assert transcript.count("=== LLM ATTEMPT START ===") == 3
+    assert transcript.count("Call Site: decision_loop") == 2
+    assert transcript.count("Call Site: final_answer_synthesis") == 1
+
+    llm_artifacts_dir = run_dir / "artifacts" / "llm"
+    assert len(list(llm_artifacts_dir.glob("*_request.txt"))) == 3
+    assert len(list(llm_artifacts_dir.glob("*_response.txt"))) == 3
+
+
+def test_synthesis_request_failure_is_logged(tmp_path: Path, monkeypatch) -> None:
+    skills_dir = tmp_path / "skills"
+    _create_demo_skill(skills_dir)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    calls = {"count": 0}
+
+    def _mock_complete_structured(
+        self,
+        provider: str,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        attempt: int,
+    ) -> LlmResult:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return LlmResult(
+                data={
+                    "selected_skill": None,
+                    "reasoning_summary": "run then finish",
+                    "required_disclosure_paths": [],
+                    "planned_actions": [
+                        {
+                            "type": "run_command",
+                            "params": {"command": "printf 'SYNTH_EVIDENCE\\n'"},
+                            "expected_output": None,
+                        },
+                        {
+                            "type": "finish",
+                            "params": {"summary": "Fallback summary"},
+                            "expected_output": None,
+                        },
+                    ],
+                },
+                meta=LlmRequestMeta(
+                    provider="anthropic",
+                    model=model,
+                    attempt=attempt,
+                    latency_ms=9,
+                    input_tokens=10,
+                    output_tokens=11,
+                ),
+            )
+        raise RuntimeError("synthesis service unavailable")
+
+    monkeypatch.setattr(ProviderRouter, "complete_structured", _mock_complete_structured)
+
+    cfg = AgentConfig()
+    cfg.logging.jsonl_dir = str(tmp_path / "runs")
+    cfg.model.provider = "anthropic"
+    cfg.runtime.max_llm_retries = 0
+    result = Orchestrator(cfg).run(task="summarize project", skills_dir=skills_dir)
+    assert result.status == "success"
+    assert calls["count"] == 2
+
+    run_dir = Path(cfg.logging.jsonl_dir) / result.run_id
+    events = [
+        json.loads(line)
+        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    synth_requests = [
+        event
+        for event in events
+        if event["event_type"] == "llm_request_sent"
+        and event["payload"].get("call_site") == "final_answer_synthesis"
+    ]
+    assert len(synth_requests) == 1
+    synth_failures = [
+        event
+        for event in events
+        if event["event_type"] == "llm_request_failed"
+        and event["payload"].get("call_site") == "final_answer_synthesis"
+    ]
+    assert len(synth_failures) == 1
+    assert any(event["event_type"] == "final_answer_synthesis_failed" for event in events)
+
+    transcript = (run_dir / cfg.logging.llm_transcript_filename).read_text(encoding="utf-8")
+    assert "Call Site: final_answer_synthesis" in transcript
+    assert "Status: request_failed" in transcript
+
+
+def test_retry_attempts_logged_with_call_site(tmp_path: Path, monkeypatch) -> None:
+    skills_dir = tmp_path / "skills"
+    _create_demo_skill(skills_dir)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    class NetworkError(Exception):
+        pass
+
+    call_count = {"value": 0}
+
+    def _mock_complete_structured(
+        self,
+        provider: str,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        attempt: int,
+    ) -> LlmResult:
+        call_count["value"] += 1
+        if call_count["value"] == 1:
+            raise NetworkError("network down")
+        return LlmResult(
+            data={
+                "selected_skill": None,
+                "reasoning_summary": "retry success",
+                "required_disclosure_paths": [],
+                "planned_actions": [{"type": "finish", "params": {}, "expected_output": None}],
+            },
+            meta=LlmRequestMeta(
+                provider="anthropic",
+                model=model,
+                attempt=attempt,
+                latency_ms=10,
+                input_tokens=11,
+                output_tokens=12,
+            ),
+        )
+
+    monkeypatch.setattr(ProviderRouter, "complete_structured", _mock_complete_structured)
+
+    cfg = AgentConfig()
+    cfg.logging.jsonl_dir = str(tmp_path / "runs")
+    cfg.model.provider = "anthropic"
+    cfg.runtime.max_llm_retries = 1
+    result = Orchestrator(cfg).run(task="inventory files", skills_dir=skills_dir)
+    assert result.status == "success"
+    assert call_count["value"] == 2
+
+    run_dir = Path(cfg.logging.jsonl_dir) / result.run_id
+    events = [
+        json.loads(line)
+        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    request_events = [event for event in events if event["event_type"] == "llm_request_sent"]
+    assert len(request_events) == 2
+    assert all(event["payload"].get("call_site") == "decision_loop" for event in request_events)
+
+    retry_events = [event for event in events if event["event_type"] == "llm_retry_scheduled"]
+    assert len(retry_events) == 1
+    assert retry_events[0]["payload"].get("call_site") == "decision_loop"
+
+    failed_events = [event for event in events if event["event_type"] == "llm_request_failed"]
+    assert len(failed_events) == 1
+    assert failed_events[0]["payload"].get("call_site") == "decision_loop"
+
+    transcript = (run_dir / cfg.logging.llm_transcript_filename).read_text(encoding="utf-8")
+    assert transcript.count("=== LLM ATTEMPT START ===") == 2
+    assert transcript.count("Call Site: decision_loop") == 2

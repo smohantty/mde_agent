@@ -33,6 +33,7 @@ class LlmTranscriptSink:
             "=== LLM ATTEMPT START ===",
             f"Turn: {payload['turn_index']}",
             f"Attempt: {payload['attempt']}",
+            f"Call Site: {payload.get('call_site', 'unspecified')}",
             f"Provider: {payload['provider']}",
             f"Model: {payload['model']}",
             f"Status: {payload['status']}",

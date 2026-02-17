@@ -13,6 +13,7 @@ def test_transcript_sink_writes_readable_log(tmp_path: Path) -> None:
     record = LlmTranscriptRecord(
         turn_index=1,
         attempt=1,
+        call_site="decision_loop",
         provider="anthropic",
         model="claude-sonnet-4-5",
         status="success",
@@ -40,6 +41,7 @@ def test_transcript_sink_writes_readable_log(tmp_path: Path) -> None:
     rows = sink.replay()
     assert len(rows) == 1
     assert "Status: success" in rows[0]
+    assert "Call Site: decision_loop" in rows[0]
     assert "Provider: anthropic" in rows[0]
     assert "--- Raw Model Request ---" in rows[0]
     assert "--- Request Prompt ---" in rows[0]

@@ -33,6 +33,7 @@ from agent.types import (
     ActionStep,
     ActionType,
     EventRecord,
+    LlmCallSite,
     LlmTranscriptBudget,
     LlmTranscriptRecord,
     LlmTranscriptUsage,
@@ -51,6 +52,25 @@ class RunResult:
     events_path: Path
     llm_transcript_path: Path | None = None
     final_summary_path: Path | None = None
+
+
+@dataclass
+class LlmInvocationContext:
+    turn_index: int
+    call_site: LlmCallSite
+    prompt_estimated_tokens: int
+    transcript_budget: LlmTranscriptBudget
+    transcript_prompt_text: str
+    transcript_disclosed_paths: list[str]
+
+
+@dataclass
+class LlmInvocationResult:
+    response_data: dict[str, Any] | str | None
+    llm_meta: dict[str, Any] | None
+    last_attempt: int
+    raw_request_text: str
+    llm_error: Exception | None
 
 
 class Orchestrator:
@@ -344,6 +364,7 @@ class Orchestrator:
         run_dir: Path,
         turn_index: int,
         bus: EventBus,
+        transcript_sink: LlmTranscriptSink | None,
     ) -> str | None:
         evidence = self._collect_tool_evidence(step_results)
         if not evidence:
@@ -373,44 +394,58 @@ class Orchestrator:
             f"artifacts/final_answer_prompt_turn_{turn_index}.txt",
             prompt,
         )
+        estimated_input_tokens = estimate_tokens(prompt)
+        max_tokens = min(1400, self.config.model.max_tokens)
         bus.emit(
             "final_answer_synthesis_started",
             {
                 "turn_index": turn_index,
-                "estimated_input_tokens": estimate_tokens(prompt),
+                "estimated_input_tokens": estimated_input_tokens,
                 "evidence_items": len(evidence),
             },
         )
 
-        response_data: dict[str, Any] | str | None = None
-        llm_error: Exception | None = None
-        for attempt in range(1, self.config.runtime.max_llm_retries + 2):
-            try:
-                result = provider_router.complete_structured(
-                    provider=provider_name,
-                    prompt=prompt,
-                    model=self.config.model.name,
-                    max_tokens=min(1400, self.config.model.max_tokens),
-                    attempt=attempt,
-                )
-                response_data = result.data
-                break
-            except Exception as exc:
-                llm_error = exc
-                if is_retryable_error(exc) and attempt <= self.config.runtime.max_llm_retries:
-                    delay = compute_backoff_delay(
-                        attempt=attempt,
-                        base_delay=self.config.runtime.retry_base_delay_seconds,
-                        max_delay=self.config.runtime.retry_max_delay_seconds,
-                    )
-                    time.sleep(min(delay, 0.25))
-                    continue
-                break
+        transcript_budget = LlmTranscriptBudget(
+            max_context_tokens=self.config.model.max_context_tokens,
+            response_headroom_tokens=self.config.model.response_headroom_tokens,
+            allocated_prompt_tokens=max(
+                0,
+                self.config.model.max_context_tokens - self.config.model.response_headroom_tokens,
+            ),
+            allocated_disclosure_tokens=0,
+        )
+        invocation_context = LlmInvocationContext(
+            turn_index=turn_index,
+            call_site="final_answer_synthesis",
+            prompt_estimated_tokens=estimated_input_tokens,
+            transcript_budget=transcript_budget,
+            transcript_prompt_text=self._sanitize_and_redact(prompt) or "",
+            transcript_disclosed_paths=[],
+        )
+        invocation_result = self._invoke_llm_with_logging(
+            provider_router=provider_router,
+            provider_name=provider_name,
+            prompt=prompt,
+            model=self.config.model.name,
+            max_tokens=max_tokens,
+            run_dir=run_dir,
+            context=invocation_context,
+            bus=bus,
+            transcript_sink=transcript_sink,
+        )
+        response_data = invocation_result.response_data
 
         if response_data is None:
             bus.emit(
                 "final_answer_synthesis_failed",
-                {"turn_index": turn_index, "reason": str(llm_error) if llm_error else "unknown"},
+                {
+                    "turn_index": turn_index,
+                    "reason": (
+                        str(invocation_result.llm_error)
+                        if invocation_result.llm_error
+                        else "unknown"
+                    ),
+                },
             )
             return None
 
@@ -420,14 +455,86 @@ class Orchestrator:
             f"artifacts/final_answer_response_turn_{turn_index}.txt",
             response_text,
         )
+        transcript_response_text = self._sanitize_and_redact(response_text)
+        llm_meta = invocation_result.llm_meta or {}
+        usage = LlmTranscriptUsage(
+            input_tokens=llm_meta.get("input_tokens"),
+            output_tokens=llm_meta.get("output_tokens"),
+            latency_ms=llm_meta.get("latency_ms"),
+        )
+        raw_action_types = self._extract_raw_action_types(response_data)
         final_answer = self._extract_final_answer(response_data)
         if not final_answer:
+            decode_failed_record = LlmTranscriptRecord(
+                turn_index=turn_index,
+                attempt=int(llm_meta.get("attempt", invocation_result.last_attempt)),
+                call_site="final_answer_synthesis",
+                provider=self._provider_name_for_transcript(provider_name),
+                model=self.config.model.name,
+                status="decode_failed",
+                raw_request_text=invocation_result.raw_request_text,
+                prompt_text=invocation_context.transcript_prompt_text,
+                response_text=transcript_response_text,
+                prompt_estimated_tokens=estimated_input_tokens,
+                budget=transcript_budget,
+                disclosed_paths=[],
+                usage=usage,
+                decode_success=False,
+                selected_skill=None,
+                raw_action_types=raw_action_types,
+                planned_action_types=[],
+                required_disclosure_paths=[],
+                response_kind="response",
+                response_kind_reason=(
+                    "Mapped to response because final answer synthesis response "
+                    "did not contain a final answer field."
+                ),
+                error="missing_final_answer",
+                retryable=None,
+            )
+            self._write_transcript(
+                bus=bus,
+                sink=transcript_sink,
+                record=decode_failed_record,
+            )
             bus.emit(
                 "final_answer_synthesis_failed",
                 {"turn_index": turn_index, "reason": "missing_final_answer"},
             )
             return None
         redacted_answer = self._sanitize_and_redact(final_answer) or final_answer
+        success_record = LlmTranscriptRecord(
+            turn_index=turn_index,
+            attempt=int(llm_meta.get("attempt", invocation_result.last_attempt)),
+            call_site="final_answer_synthesis",
+            provider=self._provider_name_for_transcript(provider_name),
+            model=self.config.model.name,
+            status="success",
+            raw_request_text=invocation_result.raw_request_text,
+            prompt_text=invocation_context.transcript_prompt_text,
+            response_text=transcript_response_text,
+            prompt_estimated_tokens=estimated_input_tokens,
+            budget=transcript_budget,
+            disclosed_paths=[],
+            usage=usage,
+            decode_success=True,
+            selected_skill=None,
+            raw_action_types=raw_action_types,
+            planned_action_types=[],
+            required_disclosure_paths=[],
+            response_kind="response",
+            response_kind_reason=(
+                "Mapped to response because final answer synthesis returns a direct final answer."
+            ),
+            finish_summary=redacted_answer,
+            error=None,
+            retryable=None,
+        )
+        self._write_transcript(
+            bus=bus,
+            sink=transcript_sink,
+            record=success_record,
+        )
         bus.emit(
             "final_answer_synthesis_completed",
             {
@@ -475,6 +582,183 @@ class Orchestrator:
                     "error": str(exc),
                 },
             )
+
+    def _write_llm_attempt_artifact(
+        self,
+        *,
+        run_dir: Path,
+        call_site: LlmCallSite,
+        turn_index: int,
+        attempt: int,
+        kind: str,
+        content: str,
+    ) -> None:
+        write_artifact(
+            run_dir,
+            f"artifacts/llm/{call_site}_turn_{turn_index}_attempt_{attempt}_{kind}.txt",
+            content,
+        )
+
+    def _invoke_llm_with_logging(
+        self,
+        *,
+        provider_router: ProviderRouter,
+        provider_name: str,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        run_dir: Path,
+        context: LlmInvocationContext,
+        bus: EventBus,
+        transcript_sink: LlmTranscriptSink | None,
+    ) -> LlmInvocationResult:
+        response_data: dict[str, Any] | str | None = None
+        llm_meta: dict[str, Any] | None = None
+        llm_error: Exception | None = None
+        last_attempt = 0
+        raw_request_text = ""
+
+        for attempt in range(1, self.config.runtime.max_llm_retries + 2):
+            last_attempt = attempt
+            request_payload = self._build_raw_model_request(
+                provider=provider_name,
+                model=model,
+                max_tokens=max_tokens,
+                prompt=prompt,
+                attempt=attempt,
+            )
+            raw_request_text = (
+                self._sanitize_and_redact(json.dumps(request_payload, ensure_ascii=True)) or ""
+            )
+            self._write_llm_attempt_artifact(
+                run_dir=run_dir,
+                call_site=context.call_site,
+                turn_index=context.turn_index,
+                attempt=attempt,
+                kind="request",
+                content=raw_request_text,
+            )
+            bus.emit(
+                "llm_request_sent",
+                {
+                    "provider": provider_name,
+                    "model": model,
+                    "attempt": attempt,
+                    "turn_index": context.turn_index,
+                    "call_site": context.call_site,
+                },
+            )
+            try:
+                result = provider_router.complete_structured(
+                    provider=provider_name,
+                    prompt=prompt,
+                    model=model,
+                    max_tokens=max_tokens,
+                    attempt=attempt,
+                )
+                response_data = result.data
+                llm_meta = result.meta.model_dump()
+                bus.emit(
+                    "llm_response_received",
+                    {
+                        "turn_index": context.turn_index,
+                        "call_site": context.call_site,
+                        "meta": llm_meta,
+                        "response_preview": summarize_text(str(response_data)),
+                    },
+                )
+                response_text = self._sanitize_and_redact(
+                    self._serialize_response_payload(response_data)
+                )
+                self._write_llm_attempt_artifact(
+                    run_dir=run_dir,
+                    call_site=context.call_site,
+                    turn_index=context.turn_index,
+                    attempt=attempt,
+                    kind="response",
+                    content=response_text or "",
+                )
+                return LlmInvocationResult(
+                    response_data=response_data,
+                    llm_meta=llm_meta,
+                    last_attempt=last_attempt,
+                    raw_request_text=raw_request_text,
+                    llm_error=None,
+                )
+            except Exception as exc:
+                llm_error = exc
+                retryable = is_retryable_error(exc)
+                request_failed_record = LlmTranscriptRecord(
+                    turn_index=context.turn_index,
+                    attempt=attempt,
+                    call_site=context.call_site,
+                    provider=self._provider_name_for_transcript(provider_name),
+                    model=model,
+                    status="request_failed",
+                    raw_request_text=raw_request_text,
+                    prompt_text=context.transcript_prompt_text,
+                    response_text=None,
+                    prompt_estimated_tokens=context.prompt_estimated_tokens,
+                    budget=context.transcript_budget,
+                    disclosed_paths=context.transcript_disclosed_paths,
+                    usage=LlmTranscriptUsage(),
+                    decode_success=False,
+                    selected_skill=None,
+                    raw_action_types=[],
+                    planned_action_types=[],
+                    required_disclosure_paths=[],
+                    response_kind="response",
+                    response_kind_reason=(
+                        "Mapped to response because the LLM request failed before decoding."
+                    ),
+                    error=self._sanitize_and_redact(str(exc)),
+                    retryable=retryable,
+                )
+                self._write_transcript(
+                    bus=bus,
+                    sink=transcript_sink,
+                    record=request_failed_record,
+                )
+                bus.emit(
+                    "llm_request_failed",
+                    {
+                        "provider": provider_name,
+                        "attempt": attempt,
+                        "turn_index": context.turn_index,
+                        "call_site": context.call_site,
+                        "error": str(exc),
+                        "retryable": retryable,
+                    },
+                )
+                if retryable and attempt <= self.config.runtime.max_llm_retries:
+                    delay = compute_backoff_delay(
+                        attempt=attempt,
+                        base_delay=self.config.runtime.retry_base_delay_seconds,
+                        max_delay=self.config.runtime.retry_max_delay_seconds,
+                    )
+                    bus.emit(
+                        "llm_retry_scheduled",
+                        {
+                            "provider": provider_name,
+                            "attempt": attempt,
+                            "turn_index": context.turn_index,
+                            "call_site": context.call_site,
+                            "delay_seconds": delay,
+                            "error": str(exc),
+                            "retryable": True,
+                        },
+                    )
+                    time.sleep(min(delay, 0.25))
+                    continue
+                break
+
+        return LlmInvocationResult(
+            response_data=response_data,
+            llm_meta=llm_meta,
+            last_attempt=last_attempt,
+            raw_request_text=raw_request_text,
+            llm_error=llm_error,
+        )
 
     def _execute_actions(
         self,
@@ -891,113 +1175,33 @@ class Orchestrator:
                     allocated_prompt_tokens=prompt_data.budget.allocated_prompt_tokens,
                     allocated_disclosure_tokens=prompt_data.budget.allocated_disclosure_tokens,
                 )
-                transcript_prompt_text = self._sanitize_and_redact(prompt_data.prompt) or ""
-                transcript_disclosed_paths = list(disclosed_snippets.keys())
-
-                llm_response_data: dict[str, Any] | str | None = None
-                llm_meta: dict[str, Any] | None = None
-                llm_error: Exception | None = None
-                last_attempt = 0
-                transcript_raw_request_text = ""
-
-                for attempt in range(1, self.config.runtime.max_llm_retries + 2):
-                    last_attempt = attempt
-                    request_payload = self._build_raw_model_request(
-                        provider=provider_name,
-                        model=self.config.model.name,
-                        max_tokens=self.config.model.max_tokens,
-                        prompt=prompt_data.prompt,
-                        attempt=attempt,
-                    )
-                    transcript_raw_request_text = (
-                        self._sanitize_and_redact(json.dumps(request_payload, ensure_ascii=True))
-                        or ""
-                    )
-                    bus.emit(
-                        "llm_request_sent",
-                        {
-                            "provider": provider_name,
-                            "model": self.config.model.name,
-                            "attempt": attempt,
-                            "turn_index": turn_index,
-                        },
-                    )
-                    try:
-                        result = provider_router.complete_structured(
-                            provider=provider_name,
-                            prompt=prompt_data.prompt,
-                            model=self.config.model.name,
-                            max_tokens=self.config.model.max_tokens,
-                            attempt=attempt,
-                        )
-                        llm_response_data = result.data
-                        llm_meta = result.meta.model_dump()
-                        break
-                    except Exception as exc:
-                        llm_error = exc
-                        retryable = is_retryable_error(exc)
-                        request_failed_record = LlmTranscriptRecord(
-                            turn_index=turn_index,
-                            attempt=attempt,
-                            provider=self._provider_name_for_transcript(provider_name),
-                            model=self.config.model.name,
-                            status="request_failed",
-                            raw_request_text=transcript_raw_request_text,
-                            prompt_text=transcript_prompt_text,
-                            response_text=None,
-                            prompt_estimated_tokens=prompt_data.estimated_input_tokens,
-                            budget=transcript_budget,
-                            disclosed_paths=transcript_disclosed_paths,
-                            usage=LlmTranscriptUsage(),
-                            decode_success=False,
-                            selected_skill=None,
-                            raw_action_types=[],
-                            planned_action_types=[],
-                            required_disclosure_paths=[],
-                            response_kind="response",
-                            response_kind_reason=(
-                                "Mapped to response because the LLM request failed before decoding."
-                            ),
-                            error=self._sanitize_and_redact(str(exc)),
-                            retryable=retryable,
-                        )
-                        self._write_transcript(
-                            bus=bus,
-                            sink=transcript_sink,
-                            record=request_failed_record,
-                        )
-                        if retryable and attempt <= self.config.runtime.max_llm_retries:
-                            delay = compute_backoff_delay(
-                                attempt=attempt,
-                                base_delay=self.config.runtime.retry_base_delay_seconds,
-                                max_delay=self.config.runtime.retry_max_delay_seconds,
-                            )
-                            bus.emit(
-                                "llm_retry_scheduled",
-                                {
-                                    "provider": provider_name,
-                                    "attempt": attempt,
-                                    "delay_seconds": delay,
-                                    "error": str(exc),
-                                    "retryable": True,
-                                },
-                            )
-                            time.sleep(min(delay, 0.25))
-                            continue
-                        bus.emit(
-                            "llm_request_failed",
-                            {
-                                "provider": provider_name,
-                                "attempt": attempt,
-                                "error": str(exc),
-                                "retryable": retryable,
-                            },
-                        )
-                        break
-
+                invocation_context = LlmInvocationContext(
+                    turn_index=turn_index,
+                    call_site="decision_loop",
+                    prompt_estimated_tokens=prompt_data.estimated_input_tokens,
+                    transcript_budget=transcript_budget,
+                    transcript_prompt_text=self._sanitize_and_redact(prompt_data.prompt) or "",
+                    transcript_disclosed_paths=list(disclosed_snippets.keys()),
+                )
+                invocation_result = self._invoke_llm_with_logging(
+                    provider_router=provider_router,
+                    provider_name=provider_name,
+                    prompt=prompt_data.prompt,
+                    model=self.config.model.name,
+                    max_tokens=self.config.model.max_tokens,
+                    run_dir=run_dir,
+                    context=invocation_context,
+                    bus=bus,
+                    transcript_sink=transcript_sink,
+                )
+                llm_response_data = invocation_result.response_data
                 if llm_response_data is None:
                     bus.emit(
-                        "run_failed", {"reason": "llm_request_failed", "error": str(llm_error)}
+                        "run_failed",
+                        {
+                            "reason": "llm_request_failed",
+                            "error": str(invocation_result.llm_error),
+                        },
                     )
                     return RunResult(
                         run_id=run_id,
@@ -1007,20 +1211,13 @@ class Orchestrator:
                         llm_transcript_path=llm_transcript_path,
                     )
 
-                bus.emit(
-                    "llm_response_received",
-                    {
-                        "turn_index": turn_index,
-                        "meta": llm_meta or {},
-                        "response_preview": summarize_text(str(llm_response_data)),
-                    },
-                )
+                llm_meta = invocation_result.llm_meta or {}
                 response_text_raw = self._serialize_response_payload(llm_response_data)
                 response_text = self._sanitize_and_redact(response_text_raw)
                 usage = LlmTranscriptUsage(
-                    input_tokens=(llm_meta or {}).get("input_tokens"),
-                    output_tokens=(llm_meta or {}).get("output_tokens"),
-                    latency_ms=(llm_meta or {}).get("latency_ms"),
+                    input_tokens=llm_meta.get("input_tokens"),
+                    output_tokens=llm_meta.get("output_tokens"),
+                    latency_ms=llm_meta.get("latency_ms"),
                 )
                 raw_action_types = self._extract_raw_action_types(llm_response_data)
 
@@ -1034,16 +1231,17 @@ class Orchestrator:
                 except DecodeError as exc:
                     decode_failed_record = LlmTranscriptRecord(
                         turn_index=turn_index,
-                        attempt=int((llm_meta or {}).get("attempt", last_attempt)),
+                        attempt=int(llm_meta.get("attempt", invocation_result.last_attempt)),
+                        call_site="decision_loop",
                         provider=self._provider_name_for_transcript(provider_name),
                         model=self.config.model.name,
                         status="decode_failed",
-                        raw_request_text=transcript_raw_request_text,
-                        prompt_text=transcript_prompt_text,
+                        raw_request_text=invocation_result.raw_request_text,
+                        prompt_text=invocation_context.transcript_prompt_text,
                         response_text=response_text,
                         prompt_estimated_tokens=prompt_data.estimated_input_tokens,
                         budget=transcript_budget,
-                        disclosed_paths=transcript_disclosed_paths,
+                        disclosed_paths=invocation_context.transcript_disclosed_paths,
                         usage=usage,
                         decode_success=False,
                         selected_skill=None,
@@ -1119,16 +1317,17 @@ class Orchestrator:
                 response_kind = self._classify_response_kind(planned_action_types)
                 success_record = LlmTranscriptRecord(
                     turn_index=turn_index,
-                    attempt=int((llm_meta or {}).get("attempt", last_attempt)),
+                    attempt=int(llm_meta.get("attempt", invocation_result.last_attempt)),
+                    call_site="decision_loop",
                     provider=self._provider_name_for_transcript(provider_name),
                     model=self.config.model.name,
                     status="success",
-                    raw_request_text=transcript_raw_request_text,
-                    prompt_text=transcript_prompt_text,
+                    raw_request_text=invocation_result.raw_request_text,
+                    prompt_text=invocation_context.transcript_prompt_text,
                     response_text=response_text,
                     prompt_estimated_tokens=prompt_data.estimated_input_tokens,
                     budget=transcript_budget,
-                    disclosed_paths=transcript_disclosed_paths,
+                    disclosed_paths=invocation_context.transcript_disclosed_paths,
                     usage=usage,
                     decode_success=True,
                     selected_skill=decision.selected_skill,
@@ -1232,6 +1431,7 @@ class Orchestrator:
                         run_dir=run_dir,
                         turn_index=turn_index,
                         bus=bus,
+                        transcript_sink=transcript_sink,
                     )
                     if synthesized_summary:
                         final_summary = synthesized_summary

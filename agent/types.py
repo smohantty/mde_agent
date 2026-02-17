@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 ActionType = Literal["call_skill", "run_command", "ask_user", "finish"]
 ResponseKind = Literal["skill_call", "tool_call", "response"]
 LlmTranscriptStatus = Literal["success", "request_failed", "decode_failed"]
+LlmCallSite = Literal["decision_loop", "final_answer_synthesis", "unspecified"]
 
 
 class SkillMetadata(BaseModel):
@@ -83,6 +84,7 @@ class LlmTranscriptUsage(BaseModel):
 class LlmTranscriptRecord(BaseModel):
     turn_index: int
     attempt: int
+    call_site: LlmCallSite = "unspecified"
     provider: Literal["anthropic", "gemini"]
     model: str
     status: LlmTranscriptStatus

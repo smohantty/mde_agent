@@ -85,13 +85,16 @@ def run_command(
         elif et == "llm_request_sent":
             turn = payload.get("turn_index")
             attempt = payload.get("attempt")
-            console.print(f"[cyan]llm[/cyan] turn={turn} attempt={attempt}")
+            call_site = payload.get("call_site", "unspecified")
+            console.print(f"[cyan]llm[/cyan] turn={turn} attempt={attempt} site={call_site}")
         elif et == "llm_response_received":
             meta = payload.get("meta", {})
             latency_ms = meta.get("latency_ms")
             output_tokens = meta.get("output_tokens")
+            call_site = payload.get("call_site", "unspecified")
             console.print(
-                f"[cyan]llm[/cyan] response latency_ms={latency_ms} output_tokens={output_tokens}"
+                f"[cyan]llm[/cyan] response site={call_site} "
+                f"latency_ms={latency_ms} output_tokens={output_tokens}"
             )
         elif et == "llm_decision_decoded":
             turn = payload.get("turn_index")

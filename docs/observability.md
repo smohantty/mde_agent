@@ -8,6 +8,11 @@ LLM communication transcript (request/response context + decode summary) is writ
 
 `<logging.jsonl_dir>/<run_id>/llm_transcript.log`
 
+Every LLM invocation is logged the same way across call sites, including:
+
+- `decision_loop`
+- `final_answer_synthesis`
+
 Replay a run:
 
 ```bash
@@ -34,14 +39,23 @@ Core events include:
 - `skill_step_executed`
 - `run_finished` / `run_failed`
 
+`llm_request_sent`, `llm_response_received`, `llm_request_failed`, and `llm_retry_scheduled`
+now include `call_site` in payload so you can see where the model call originated.
+
 Transcript entries include:
 
 - full prompt/response bodies (sanitized + redacted)
 - explicit request/response sections (`--- Raw Model Request ---`, `--- Raw Model Response ---`)
 - raw request section includes provider payload wrapper (model/config/messages/contents)
 - provider/model/attempt metadata
+- call-site metadata (`Call Site: decision_loop|final_answer_synthesis|unspecified`)
 - token usage and latency
 - raw action types from model output and normalized action types after decoding
 - response classification (`skill_call`, `tool_call`, `response`)
 - classification reason (`Response Kind Mapping`) so it is clear why a response was mapped
 - user-focused plain-text blocks (no run/trace/span/timestamp/hash headers; those remain in `events.jsonl`)
+
+Each attempt also writes per-attempt artifacts:
+
+- `artifacts/llm/<call_site>_turn_<n>_attempt_<m>_request.txt`
+- `artifacts/llm/<call_site>_turn_<n>_attempt_<m>_response.txt`
