@@ -86,7 +86,7 @@ def test_orchestrator_missing_key_fails_fast(tmp_path: Path, monkeypatch) -> Non
     )
 
 
-def test_normalize_markdown_find_command(monkeypatch) -> None:
+def test_normalize_find_command_with_rg(monkeypatch) -> None:
     monkeypatch.setattr(Orchestrator, "_rg_available", staticmethod(lambda: True))
     normalized = Orchestrator._normalize_command("find . -type f -name '*.md' | head -20")
     assert 'rg --files -g "*.md"' in normalized
@@ -94,11 +94,26 @@ def test_normalize_markdown_find_command(monkeypatch) -> None:
     assert "| head -n 20" in normalized
 
 
+def test_normalize_find_command_any_extension(monkeypatch) -> None:
+    monkeypatch.setattr(Orchestrator, "_rg_available", staticmethod(lambda: True))
+    normalized = Orchestrator._normalize_command("find . -type f -name '*.py' | head -10")
+    assert 'rg --files -g "*.py"' in normalized
+    assert "!.venv/**" in normalized
+    assert "| head -n 10" in normalized
+
+
 def test_normalize_rg_command_without_rg(monkeypatch) -> None:
     monkeypatch.setattr(Orchestrator, "_rg_available", staticmethod(lambda: False))
     normalized = Orchestrator._normalize_command('rg --files -g "*.md" -g "!.venv/**"')
     assert 'find . -type f -name "*.md"' in normalized
     assert "rg --files" not in normalized
+
+
+def test_normalize_rg_search_without_rg(monkeypatch) -> None:
+    monkeypatch.setattr(Orchestrator, "_rg_available", staticmethod(lambda: False))
+    normalized = Orchestrator._normalize_command('rg "TODO" src/')
+    assert 'grep -E "TODO"' in normalized
+    assert "rg" not in normalized
 
 
 def test_orchestrator_writes_transcript_success(tmp_path: Path, monkeypatch) -> None:
@@ -487,10 +502,10 @@ def test_orchestrator_writes_transcript_decode_failed(tmp_path: Path, monkeypatc
 
 
 def test_orchestrator_recovers_from_repeated_self_handoff_loop(tmp_path: Path, monkeypatch) -> None:
+    """Recovery with no default_action_params emits only a finish action."""
     skills_dir = tmp_path / "skills"
     _create_demo_skill(skills_dir)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setattr(Orchestrator, "_rg_available", staticmethod(lambda: False))
 
     def _mock_complete_structured(
         self,
@@ -542,6 +557,89 @@ def test_orchestrator_recovers_from_repeated_self_handoff_loop(tmp_path: Path, m
         and "finish" in event["payload"].get("recovery_action_types", [])
         for event in events
     )
+    # No run_command expected: skill has no default_action_params
+    assert any(event["event_type"] == "run_finished" for event in events)
+
+
+def _create_skill_with_defaults(skills_dir: Path) -> None:
+    """Create a skill that has default_action_params for recovery testing."""
+    skill_dir = skills_dir / "analyzer"
+    (skill_dir / "references").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "scripts").mkdir(parents=True, exist_ok=True)
+    skill_md = "\n".join(
+        [
+            "---",
+            "name: analyzer",
+            "description: generic analyzer skill",
+            "version: 0.1.0",
+            "tags: [analysis]",
+            "allowed_tools: [run_command]",
+            "default_action_params:",
+            "  list_files:",
+            '    command: "ls -la"',
+            "  check_status:",
+            '    command: "echo ok"',
+            "---",
+            "",
+            "# Purpose",
+            "Analyze things",
+            "",
+        ]
+    )
+    (skill_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
+
+
+def test_self_handoff_recovery_uses_skill_defaults(tmp_path: Path, monkeypatch) -> None:
+    """Recovery with default_action_params uses the skill's own commands."""
+    skills_dir = tmp_path / "skills"
+    _create_skill_with_defaults(skills_dir)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    def _mock_complete_structured(
+        self,
+        provider: str,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        attempt: int,
+        **kwargs: object,
+    ) -> LlmResult:
+        return LlmResult(
+            data={
+                "selected_skill": "analyzer",
+                "reasoning_summary": "handoff",
+                "required_disclosure_paths": [],
+                "planned_actions": [
+                    {
+                        "type": "call_skill",
+                        "params": {"skill_name": "analyzer"},
+                        "expected_output": None,
+                    }
+                ],
+            },
+            meta=LlmRequestMeta(
+                provider="anthropic",
+                model=model,
+                attempt=attempt,
+                latency_ms=5,
+                input_tokens=9,
+                output_tokens=7,
+            ),
+        )
+
+    monkeypatch.setattr(ProviderRouter, "complete_structured", _mock_complete_structured)
+
+    cfg = AgentConfig()
+    cfg.logging.jsonl_dir = str(tmp_path / "runs")
+    cfg.model.provider = "anthropic"
+    cfg.runtime.max_turns = 4
+    result = Orchestrator(cfg).run(task="analyze project", skills_dir=skills_dir)
+    assert result.status == "success"
+
+    events_path = Path(cfg.logging.jsonl_dir) / result.run_id / "events.jsonl"
+    events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines()]
+    assert any(event["event_type"] == "self_handoff_recovery_applied" for event in events)
+    # Recovery should run commands from the skill's default_action_params
     assert any(
         event["event_type"] == "skill_step_executed"
         and event["payload"].get("type") == "run_command"

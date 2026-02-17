@@ -163,17 +163,21 @@ class Orchestrator:
             )
         return catalog
 
+    _NOISY_DIRS = (".venv", "runs", ".git")
+
     @staticmethod
     def _normalize_command(command: str) -> str:
-        """Rewrite noisy markdown discovery commands to safer workspace-scoped rg forms."""
+        """Rewrite file-discovery commands to safer workspace-scoped forms."""
         normalized = command.strip()
-        pattern = r"""find\s+\.\s+-type\s+f\s+-name\s+['"]\*\.md['"]"""
-        if re.search(pattern, normalized) and Orchestrator._rg_available():
+        find_match = re.search(
+            r"""find\s+\.\s+-type\s+f\s+-name\s+['"]([^'"]+)['"]""", normalized
+        )
+        if find_match and Orchestrator._rg_available():
+            glob_pattern = find_match.group(1)
             head_match = re.search(r"head\s+-(?:n\s*)?(\d+)", normalized)
             limit = int(head_match.group(1)) if head_match else 20
-            return (
-                f'rg --files -g "*.md" -g "!.venv/**" -g "!runs/**" -g "!.git/**" | head -n {limit}'
-            )
+            excludes = " ".join(f'-g "!{d}/**"' for d in Orchestrator._NOISY_DIRS)
+            return f'rg --files -g "{glob_pattern}" {excludes} | head -n {limit}'
         if not Orchestrator._rg_available():
             normalized = Orchestrator._rewrite_rg_commands_without_rg(normalized)
         return normalized
@@ -183,22 +187,35 @@ class Orchestrator:
         return shutil.which("rg") is not None
 
     @staticmethod
-    def _md_find_command(*, limit: int | None = None) -> str:
-        command = (
-            'find . -type f -name "*.md" '
-            '-not -path "./.venv/*" -not -path "./runs/*" -not -path "./.git/*"'
+    def _build_find_command(
+        glob_pattern: str = "*",
+        *,
+        limit: int | None = None,
+    ) -> str:
+        """Build a generic find command with standard workspace exclusions."""
+        excludes = " ".join(
+            f'-not -path "./{d}/*"' for d in Orchestrator._NOISY_DIRS
         )
+        command = f'find . -type f -name "{glob_pattern}" {excludes}'
         if limit is not None:
             command = f"{command} | head -n {limit}"
         return command
 
     @staticmethod
     def _rewrite_rg_commands_without_rg(command: str) -> str:
+        """Rewrite rg commands to grep/find equivalents when rg is unavailable."""
         rewritten = command
         rg_files_pattern = r"""rg\s+--files(?:\s+-g\s+["'][^"']+["'])+"""
-        rewritten = re.sub(rg_files_pattern, Orchestrator._md_find_command(), rewritten)
-        rewritten = rewritten.replace('rg "^#"', 'grep -E "^#"')
-        rewritten = rewritten.replace('rg "^#{1,3} "', 'grep -E "^#{1,3} "')
+        rg_match = re.search(rg_files_pattern, rewritten)
+        if rg_match:
+            include_globs = re.findall(r"""-g\s+["']([^!"'][^"']*)["']""", rg_match.group())
+            glob = include_globs[0] if include_globs else "*"
+            rewritten = (
+                rewritten[: rg_match.start()]
+                + Orchestrator._build_find_command(glob)
+                + rewritten[rg_match.end() :]
+            )
+        rewritten = re.sub(r'rg\s+"([^"]*)"', r'grep -E "\1"', rewritten)
         return rewritten
 
     @staticmethod
@@ -297,36 +314,13 @@ class Orchestrator:
         self,
         skill: Any | None,
     ) -> list[ActionStep]:
+        """Build generic recovery actions from the skill's own default_action_params."""
         commands: list[str] = []
-        if not self._rg_available():
-            commands = [
-                self._md_find_command(limit=50),
-                (
-                    f"f=$({self._md_find_command(limit=1)}); "
-                    'if [ -n "$f" ]; then echo "## $f"; sed -n "1,120p" "$f"; '
-                    'else echo "no markdown files found"; fi'
-                ),
-            ]
-
-        if not commands and skill is not None:
+        if skill is not None:
             defaults = getattr(skill.metadata, "default_action_params", {})
             if isinstance(defaults, dict):
-                preferred = [
-                    "generate_summary",
-                    "aggregate_summaries",
-                    "extract_sections",
-                    "extract_key_sections",
-                    "read_file",
-                    "read_file_content",
-                    "list_files",
-                    "find_markdown_files",
-                    "identify_markdown_files",
-                ]
-                ordered = [key for key in preferred if key in defaults]
-                ordered.extend(key for key in defaults if key not in ordered)
                 seen: set[str] = set()
-                for key in ordered:
-                    params = defaults.get(key, {})
+                for params in defaults.values():
                     if not isinstance(params, dict):
                         continue
                     command = params.get("command")
