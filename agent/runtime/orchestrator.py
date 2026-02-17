@@ -15,7 +15,7 @@ from agent.logging.events import EventBus, EventContext
 from agent.logging.jsonl_sink import JsonlSink
 from agent.logging.redaction import summarize_text
 from agent.runtime.executor import CommandExecutor
-from agent.runtime.retry import compute_backoff_delay
+from agent.runtime.retry import compute_backoff_delay, is_retryable_error
 from agent.runtime.signals import install_signal_handlers
 from agent.skills.disclosure import DisclosureEngine
 from agent.skills.registry import SkillRegistry
@@ -408,9 +408,10 @@ class Orchestrator:
                         llm_response_data = result.data
                         llm_meta = result.meta.model_dump()
                         break
-                    except Exception as exc:  # pragma: no cover - external provider behavior
+                    except Exception as exc:
                         llm_error = exc
-                        if attempt <= self.config.runtime.max_llm_retries:
+                        retryable = is_retryable_error(exc)
+                        if retryable and attempt <= self.config.runtime.max_llm_retries:
                             delay = compute_backoff_delay(
                                 attempt=attempt,
                                 base_delay=self.config.runtime.retry_base_delay_seconds,
@@ -423,6 +424,7 @@ class Orchestrator:
                                     "attempt": attempt,
                                     "delay_seconds": delay,
                                     "error": str(exc),
+                                    "retryable": True,
                                 },
                             )
                             time.sleep(min(delay, 0.25))
@@ -433,8 +435,10 @@ class Orchestrator:
                                 "provider": provider_name,
                                 "attempt": attempt,
                                 "error": str(exc),
+                                "retryable": retryable,
                             },
                         )
+                        break
 
                 if llm_response_data is None:
                     bus.emit(
