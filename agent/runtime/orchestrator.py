@@ -118,7 +118,7 @@ class Orchestrator:
         if payload is None:
             return None
         if isinstance(payload, dict):
-            return json.dumps(payload, ensure_ascii=True)
+            return json.dumps(payload, ensure_ascii=True, indent=2)
         return str(payload)
 
     @staticmethod
@@ -672,7 +672,7 @@ class Orchestrator:
         write_artifact(
             run_dir,
             self._artifact_path(
-                f"artifacts/llm/{call_site}_turn_{turn_index}_attempt_{attempt}_{kind}.txt",
+                f"artifacts/llm/{call_site}_turn_{turn_index}_attempt_{attempt}_{kind}.json",
                 artifact_prefix,
             ),
             content,
@@ -712,7 +712,7 @@ class Orchestrator:
                 force_tool_use=force_tool_use,
             )
             raw_request_text = (
-                self._sanitize_and_redact(json.dumps(request_payload, ensure_ascii=True)) or ""
+                self._sanitize_and_redact(json.dumps(request_payload, ensure_ascii=True, indent=2)) or ""
             )
             self._write_llm_attempt_artifact(
                 run_dir=run_dir,

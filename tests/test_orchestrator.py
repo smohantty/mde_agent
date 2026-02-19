@@ -869,8 +869,8 @@ def test_all_llm_calls_logged_across_call_sites(tmp_path: Path, monkeypatch) -> 
     assert transcript.count("Call Site: final_answer_synthesis") == 1
 
     llm_artifacts_dir = run_dir / "artifacts" / "llm"
-    assert len(list(llm_artifacts_dir.glob("*_request.txt"))) == 3
-    assert len(list(llm_artifacts_dir.glob("*_response.txt"))) == 3
+    assert len(list(llm_artifacts_dir.glob("*_request.json"))) == 3
+    assert len(list(llm_artifacts_dir.glob("*_response.json"))) == 3
 
 
 def test_synthesis_request_failure_is_logged(tmp_path: Path, monkeypatch) -> None:
