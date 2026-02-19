@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from agent.config import AgentConfig
@@ -419,6 +420,89 @@ def test_orchestrator_tool_output_is_reused_before_finish(tmp_path: Path, monkey
     events = (run_dir / "events.jsonl").read_text(encoding="utf-8")
     assert '"stdout_artifact":' in events
     assert '"final_summary": "Final answer based on RESULT_TOKEN"' in events
+
+
+def test_orchestrator_handles_run_command_timeout_without_crashing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    skills_dir = tmp_path / "skills"
+    _create_demo_skill(skills_dir)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    def _mock_complete_structured(
+        self,
+        provider: str,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        attempt: int,
+        **kwargs: object,
+    ) -> LlmResult:
+        return LlmResult(
+            data={
+                "selected_skill": None,
+                "reasoning_summary": "run command",
+                "required_disclosure_paths": [],
+                "planned_actions": [
+                    {
+                        "type": "run_command",
+                        "params": {"command": "echo hello"},
+                        "expected_output": None,
+                    }
+                ],
+            },
+            meta=LlmRequestMeta(
+                provider="anthropic",
+                model=model,
+                attempt=attempt,
+                latency_ms=7,
+                input_tokens=11,
+                output_tokens=13,
+            ),
+        )
+
+    timeout_calls = {"count": 0}
+
+    def _raise_timeout(*args: object, **kwargs: object) -> object:
+        timeout_calls["count"] += 1
+        raise subprocess.TimeoutExpired(
+            cmd=args[0],
+            timeout=kwargs.get("timeout", 0),
+            output="partial output",
+            stderr="",
+        )
+
+    import agent.runtime.executor as executor_module
+
+    monkeypatch.setattr(executor_module.subprocess, "run", _raise_timeout)
+    monkeypatch.setattr(ProviderRouter, "complete_structured", _mock_complete_structured)
+
+    cfg = AgentConfig()
+    cfg.logging.jsonl_dir = str(tmp_path / "runs")
+    cfg.model.provider = "anthropic"
+    result = Orchestrator(cfg).run(task="run timed command", skills_dir=skills_dir)
+    assert result.status == "failed"
+    assert timeout_calls["count"] == 2
+
+    run_dir = Path(cfg.logging.jsonl_dir) / result.run_id
+    events = [
+        json.loads(line)
+        for line in (run_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert any(
+        event["event_type"] == "skill_step_executed"
+        and event["payload"].get("type") == "run_command"
+        and event["payload"].get("status") == "failed"
+        and event["payload"].get("exit_code") == 124
+        and "timed out after" in event["payload"].get("stderr", "")
+        and event["payload"].get("retry_count") == 1
+        for event in events
+    )
+    assert any(
+        event["event_type"] == "run_failed"
+        and event["payload"].get("reason") == "step_execution_failed"
+        for event in events
+    )
 
 
 def test_orchestrator_synthesizes_final_answer_from_tool_evidence(
