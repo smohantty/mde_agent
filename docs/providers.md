@@ -4,23 +4,28 @@
 
 Required env var:
 
-- `ANTHROPIC_API_KEY`
+- `ANTHROPIC_AUTH_TOKEN` (preferred when available)
+- or `ANTHROPIC_API_KEY`
 
 Fallback file (auto-read by Python when env var is not set):
 
-- `./.env` containing `ANTHROPIC_API_KEY=...`
+- `./.env` containing either `ANTHROPIC_API_KEY=...` or `ANTHROPIC_AUTH_TOKEN=...`
 
 Linux/macOS:
 
 ```bash
 export ANTHROPIC_API_KEY="your_anthropic_key"
+export ANTHROPIC_AUTH_TOKEN="your_anthropic_token"
 ```
 
 Windows PowerShell:
 
 ```powershell
 $env:ANTHROPIC_API_KEY="your_anthropic_key"
+$env:ANTHROPIC_AUTH_TOKEN="your_anthropic_token"
 ```
+
+When both are set, the agent prefers `ANTHROPIC_AUTH_TOKEN`.
 
 ## Gemini
 

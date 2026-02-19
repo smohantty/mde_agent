@@ -16,12 +16,31 @@ uv sync
 uv run agent config init
 ```
 
-3. Set an API key (choose provider):
+3. Set provider credentials (choose provider):
+
+Anthropic credentials:
+
+API key path (direct Anthropic API):
+
+1. Sign in to [console.anthropic.com](https://console.anthropic.com/).
+2. Open **Settings -> API Keys**.
+3. Create a key and copy it.
+4. Set `ANTHROPIC_API_KEY`.
+
+Auth token path (bearer token, usually org-managed OAuth/proxy):
+
+1. Sign in to [console.anthropic.com](https://console.anthropic.com/) with your org account.
+2. Confirm with your org admin which OAuth/proxy flow issues Anthropic bearer tokens (not all workspaces expose this).
+3. Complete that flow and copy the issued bearer token.
+4. Set `ANTHROPIC_AUTH_TOKEN`.
+
+If both are set, this agent prefers `ANTHROPIC_AUTH_TOKEN`.
 
 Linux/macOS:
 
 ```bash
 export ANTHROPIC_API_KEY="your_key"
+export ANTHROPIC_AUTH_TOKEN="your_token"
 export GEMINI_API_KEY="your_key"
 ```
 
@@ -30,6 +49,7 @@ Or create a local `.env` file (auto-loaded by the agent):
 ```bash
 cat > .env <<'EOF'
 ANTHROPIC_API_KEY=your_key
+ANTHROPIC_AUTH_TOKEN=your_token
 GEMINI_API_KEY=your_key
 EOF
 ```
@@ -38,6 +58,7 @@ Windows PowerShell:
 
 ```powershell
 $env:ANTHROPIC_API_KEY="your_key"
+$env:ANTHROPIC_AUTH_TOKEN="your_token"
 $env:GEMINI_API_KEY="your_key"
 ```
 

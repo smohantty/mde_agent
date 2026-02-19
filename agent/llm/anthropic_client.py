@@ -11,8 +11,11 @@ from agent.types import LlmRequestMeta
 class AnthropicClient(BaseLlmClient):
     provider = "anthropic"
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str | None = None, auth_token: str | None = None) -> None:
+        if not api_key and not auth_token:
+            raise ValueError("AnthropicClient requires either api_key or auth_token")
         self.api_key = api_key
+        self.auth_token = auth_token
 
     def complete_structured(
         self,
@@ -29,7 +32,12 @@ class AnthropicClient(BaseLlmClient):
         except Exception as exc:  # pragma: no cover
             raise RuntimeError("anthropic package is not installed") from exc
 
-        client = anthropic.Anthropic(api_key=self.api_key)
+        client_kwargs: dict[str, Any] = {}
+        if self.auth_token:
+            client_kwargs["auth_token"] = self.auth_token
+        elif self.api_key:
+            client_kwargs["api_key"] = self.api_key
+        client = anthropic.Anthropic(**client_kwargs)
 
         kwargs: dict[str, Any] = {
             "model": model,

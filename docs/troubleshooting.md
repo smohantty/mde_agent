@@ -2,7 +2,8 @@
 
 ## missing_provider_api_key
 
-Set `ANTHROPIC_API_KEY` or `GEMINI_API_KEY` depending on selected provider.
+Set `ANTHROPIC_AUTH_TOKEN` (preferred) or `ANTHROPIC_API_KEY` for Anthropic, or set
+`GEMINI_API_KEY` for Gemini.
 
 ## No skills found
 

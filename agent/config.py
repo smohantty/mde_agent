@@ -12,6 +12,7 @@ ProviderName = Literal["anthropic", "gemini"]
 
 class ProviderConfig(BaseModel):
     api_key_env: str
+    auth_token_env: str | None = None
 
 
 class ModelConfig(BaseModel):
@@ -25,7 +26,10 @@ class ModelConfig(BaseModel):
     ] = "native_with_json_fallback"
     providers: dict[ProviderName, ProviderConfig] = Field(
         default_factory=lambda: {
-            "anthropic": ProviderConfig(api_key_env="ANTHROPIC_API_KEY"),
+            "anthropic": ProviderConfig(
+                api_key_env="ANTHROPIC_API_KEY",
+                auth_token_env="ANTHROPIC_AUTH_TOKEN",
+            ),
             "gemini": ProviderConfig(api_key_env="GEMINI_API_KEY"),
         }
     )
@@ -178,6 +182,12 @@ def write_default_config(path: Path, overwrite: bool = False) -> None:
 
 def get_provider_api_key(config: AgentConfig, provider: ProviderName) -> str | None:
     env_name = config.model.providers[provider].api_key_env
+    return _get_env_or_dotenv(env_name)
+
+
+def _get_env_or_dotenv(env_name: str | None) -> str | None:
+    if not env_name:
+        return None
     value = os.getenv(env_name)
     if value is None:
         dotenv_values = _read_dotenv(Path(".env"))
@@ -186,3 +196,8 @@ def get_provider_api_key(config: AgentConfig, provider: ProviderName) -> str | N
         return None
     cleaned = value.strip()
     return cleaned or None
+
+
+def get_provider_auth_token(config: AgentConfig, provider: ProviderName) -> str | None:
+    env_name = config.model.providers[provider].auth_token_env
+    return _get_env_or_dotenv(env_name)

@@ -6,6 +6,7 @@ from agent.config import (
     AgentConfig,
     discover_config_path,
     get_provider_api_key,
+    get_provider_auth_token,
     load_config,
     write_default_config,
 )
@@ -57,3 +58,27 @@ def test_provider_api_key_env_overrides_dotenv(tmp_path: Path, monkeypatch) -> N
 
     config = AgentConfig()
     assert get_provider_api_key(config, "anthropic") == "from-env"
+
+
+def test_provider_auth_token_lookup(monkeypatch) -> None:
+    config = AgentConfig()
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", " token-value ")
+    assert get_provider_auth_token(config, "anthropic") == "token-value"
+
+
+def test_provider_auth_token_lookup_from_dotenv(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    (tmp_path / ".env").write_text("ANTHROPIC_AUTH_TOKEN=from-dotenv-token\n", encoding="utf-8")
+
+    config = AgentConfig()
+    assert get_provider_auth_token(config, "anthropic") == "from-dotenv-token"
+
+
+def test_provider_auth_token_env_overrides_dotenv(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("ANTHROPIC_AUTH_TOKEN=from-dotenv-token\n", encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "from-env-token")
+
+    config = AgentConfig()
+    assert get_provider_auth_token(config, "anthropic") == "from-env-token"

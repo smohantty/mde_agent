@@ -11,7 +11,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from agent.config import AgentConfig, ProviderName, get_provider_api_key
+from agent.config import (
+    AgentConfig,
+    ProviderName,
+    get_provider_api_key,
+    get_provider_auth_token,
+)
 from agent.llm.decoder import DecodeError, decode_model_decision, make_finish_decision
 from agent.llm.prompt_builder import build_prompt
 from agent.llm.provider_router import ProviderRouter
@@ -1356,9 +1361,14 @@ class Orchestrator:
             )
 
         anthropic_key = get_provider_api_key(self.config, "anthropic")
+        anthropic_auth_token = get_provider_auth_token(self.config, "anthropic")
         gemini_key = get_provider_api_key(self.config, "gemini")
-        selected_provider_key = anthropic_key if provider_name == "anthropic" else gemini_key
-        if selected_provider_key is None:
+        provider_has_credentials = (
+            bool(anthropic_key or anthropic_auth_token)
+            if provider_name == "anthropic"
+            else bool(gemini_key)
+        )
+        if not provider_has_credentials:
             bus.emit(
                 "run_failed",
                 {
@@ -1374,7 +1384,11 @@ class Orchestrator:
                 llm_transcript_path=llm_transcript_path,
             )
 
-        provider_router = ProviderRouter(anthropic_api_key=anthropic_key, gemini_api_key=gemini_key)
+        provider_router = ProviderRouter(
+            anthropic_api_key=anthropic_key,
+            gemini_api_key=gemini_key,
+            anthropic_auth_token=anthropic_auth_token,
+        )
         executor = CommandExecutor(
             linux_shell=self.config.runtime.shell_linux,
             windows_shell=self.config.runtime.shell_windows,

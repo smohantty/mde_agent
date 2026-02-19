@@ -145,6 +145,49 @@ def test_orchestrator_missing_key_fails_fast(tmp_path: Path, monkeypatch) -> Non
     )
 
 
+def test_orchestrator_accepts_anthropic_auth_token(tmp_path: Path, monkeypatch) -> None:
+    skills_dir = tmp_path / "skills"
+    _create_demo_skill(skills_dir)
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "auth-token")
+
+    def _mock_complete_structured(
+        self,
+        provider: str,
+        prompt: str,
+        model: str,
+        max_tokens: int,
+        attempt: int,
+        **kwargs: object,
+    ) -> LlmResult:
+        return LlmResult(
+            data={
+                "selected_skill": None,
+                "reasoning_summary": "done",
+                "required_disclosure_paths": [],
+                "planned_actions": [{"type": "finish", "params": {}, "expected_output": None}],
+            },
+            meta=LlmRequestMeta(
+                provider="anthropic",
+                model=model,
+                attempt=attempt,
+                latency_ms=5,
+                input_tokens=10,
+                output_tokens=10,
+            ),
+        )
+
+    monkeypatch.setattr(ProviderRouter, "complete_structured", _mock_complete_structured)
+
+    cfg = AgentConfig()
+    cfg.logging.jsonl_dir = str(tmp_path / "runs")
+    cfg.model.provider = "anthropic"
+    result = Orchestrator(cfg).run(task="inventory files", skills_dir=skills_dir)
+    assert result.status == "success"
+
+
 def test_normalize_find_command_with_rg(monkeypatch) -> None:
     monkeypatch.setattr(Orchestrator, "_rg_available", staticmethod(lambda: True))
     normalized = Orchestrator._normalize_command("find . -type f -name '*.md' | head -20")

@@ -8,10 +8,17 @@ from agent.llm.gemini_client import GeminiClient
 
 
 class ProviderRouter:
-    def __init__(self, anthropic_api_key: str | None, gemini_api_key: str | None) -> None:
+    def __init__(
+        self,
+        anthropic_api_key: str | None,
+        gemini_api_key: str | None,
+        anthropic_auth_token: str | None = None,
+    ) -> None:
         self._clients: dict[str, BaseLlmClient] = {}
-        if anthropic_api_key:
-            self._clients["anthropic"] = AnthropicClient(anthropic_api_key)
+        if anthropic_auth_token:
+            self._clients["anthropic"] = AnthropicClient(auth_token=anthropic_auth_token)
+        elif anthropic_api_key:
+            self._clients["anthropic"] = AnthropicClient(api_key=anthropic_api_key)
         if gemini_api_key:
             self._clients["gemini"] = GeminiClient(gemini_api_key)
 
