@@ -188,6 +188,7 @@ class Orchestrator:
                     "allowed_tools": list(skill.metadata.allowed_tools),
                     "references_index": list(skill.metadata.references_index),
                     "scripts_index": list(skill.scripts),
+                    "skill_dir": str(skill.skill_dir),
                 }
             )
         return catalog
@@ -1729,6 +1730,23 @@ class Orchestrator:
                             "count": consecutive_self_handoff_turns,
                         },
                     )
+                    # Auto-disclose the full SKILL.md for the selected skill so the
+                    # next turn has concrete command syntax (e.g. remote-execution
+                    # instructions) rather than having to guess.
+                    if decision.selected_skill:
+                        _sh_target = registry.by_name(skills, decision.selected_skill)
+                        if _sh_target is not None:
+                            _sh_stage2 = disclosure_engine.stage2(
+                                _sh_target, ["SKILL.md"]
+                            )
+                            disclosed_snippets.update(_sh_stage2.snippets)
+                            self._emit_disclosure(
+                                bus,
+                                _sh_stage2.stage,
+                                _sh_stage2.snippets,
+                                _sh_stage2.total_bytes,
+                                _sh_stage2.total_tokens,
+                            )
                 else:
                     consecutive_self_handoff_turns = 0
                     blocked_self_handoff_skill = None
@@ -1752,17 +1770,30 @@ class Orchestrator:
 
                 if decision.selected_skill:
                     target_skill = registry.by_name(skills, decision.selected_skill)
-                    if target_skill and decision.required_disclosure_paths:
-                        stage2 = disclosure_engine.stage2(
-                            target_skill, decision.required_disclosure_paths
-                        )
-                        disclosed_snippets.update(stage2.snippets)
+                    if target_skill is not None:
+                        if decision.required_disclosure_paths:
+                            stage2 = disclosure_engine.stage2(
+                                target_skill, decision.required_disclosure_paths
+                            )
+                            disclosed_snippets.update(stage2.snippets)
+                            self._emit_disclosure(
+                                bus,
+                                stage2.stage,
+                                stage2.snippets,
+                                stage2.total_bytes,
+                                stage2.total_tokens,
+                            )
+                        # Always disclose Stage 1 for the LLM-selected skill so
+                        # subsequent turns have its summary even when the prefilter
+                        # top candidate was a different skill.
+                        _sel_stage1 = disclosure_engine.stage1(target_skill)
+                        disclosed_snippets.update(_sel_stage1.snippets)
                         self._emit_disclosure(
                             bus,
-                            stage2.stage,
-                            stage2.snippets,
-                            stage2.total_bytes,
-                            stage2.total_tokens,
+                            _sel_stage1.stage,
+                            _sel_stage1.snippets,
+                            _sel_stage1.total_bytes,
+                            _sel_stage1.total_tokens,
                         )
 
                 if should_finish:

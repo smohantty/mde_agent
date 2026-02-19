@@ -96,6 +96,18 @@ def _build_progress_renderer(show_progress: bool) -> Callable[[EventRecord], Non
                 )
             else:
                 console.print(f"[cyan]step[/cyan] {step_id} type={step_type} status={status}")
+            if status == "failed":
+                exit_code = payload.get("exit_code")
+                command = payload.get("command")
+                stderr = payload.get("stderr", "").strip()
+                stdout = payload.get("stdout", "").strip()
+                if command:
+                    console.print(f"  [red]command:[/red] {command}")
+                console.print(f"  [red]exit_code:[/red] {exit_code}")
+                if stderr:
+                    console.print(f"  [red]stderr:[/red] {stderr}")
+                if stdout:
+                    console.print(f"  [red]stdout:[/red] {stdout}")
         elif et == "step_retry_scheduled":
             step_id = payload.get("step_id")
             retry_count = payload.get("retry_count")
