@@ -16,6 +16,7 @@ from agent.config import (
     ProviderName,
     get_provider_api_key,
     get_provider_auth_token,
+    provider_has_credentials,
 )
 from agent.llm.decoder import DecodeError, decode_model_decision, make_finish_decision
 from agent.llm.prompt_builder import build_prompt
@@ -1360,15 +1361,7 @@ class Orchestrator:
                 llm_transcript_path=llm_transcript_path,
             )
 
-        anthropic_key = get_provider_api_key(self.config, "anthropic")
-        anthropic_auth_token = get_provider_auth_token(self.config, "anthropic")
-        gemini_key = get_provider_api_key(self.config, "gemini")
-        provider_has_credentials = (
-            bool(anthropic_key or anthropic_auth_token)
-            if provider_name == "anthropic"
-            else bool(gemini_key)
-        )
-        if not provider_has_credentials:
+        if not provider_has_credentials(self.config, cast(ProviderName, provider_name)):
             bus.emit(
                 "run_failed",
                 {
@@ -1383,6 +1376,10 @@ class Orchestrator:
                 events_path=sink.path,
                 llm_transcript_path=llm_transcript_path,
             )
+
+        anthropic_key = get_provider_api_key(self.config, "anthropic")
+        anthropic_auth_token = get_provider_auth_token(self.config, "anthropic")
+        gemini_key = get_provider_api_key(self.config, "gemini")
 
         provider_router = ProviderRouter(
             anthropic_api_key=anthropic_key,

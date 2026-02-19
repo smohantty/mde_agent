@@ -8,6 +8,7 @@ from agent.config import (
     get_provider_api_key,
     get_provider_auth_token,
     load_config,
+    provider_has_credentials,
     write_default_config,
 )
 
@@ -82,3 +83,22 @@ def test_provider_auth_token_env_overrides_dotenv(tmp_path: Path, monkeypatch) -
 
     config = AgentConfig()
     assert get_provider_auth_token(config, "anthropic") == "from-env-token"
+
+
+def test_provider_has_credentials_with_api_key(monkeypatch) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "key")
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    assert provider_has_credentials(AgentConfig(), "anthropic") is True
+
+
+def test_provider_has_credentials_with_auth_token_only(monkeypatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token")
+    assert provider_has_credentials(AgentConfig(), "anthropic") is True
+
+
+def test_provider_has_credentials_with_neither(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    assert provider_has_credentials(AgentConfig(), "anthropic") is False

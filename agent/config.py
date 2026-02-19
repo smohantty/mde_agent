@@ -201,3 +201,11 @@ def _get_env_or_dotenv(env_name: str | None) -> str | None:
 def get_provider_auth_token(config: AgentConfig, provider: ProviderName) -> str | None:
     env_name = config.model.providers[provider].auth_token_env
     return _get_env_or_dotenv(env_name)
+
+
+def provider_has_credentials(config: AgentConfig, provider: ProviderName) -> bool:
+    """Return True if any credential (api_key or auth_token) is available."""
+    return bool(
+        get_provider_api_key(config, provider)
+        or get_provider_auth_token(config, provider)
+    )
