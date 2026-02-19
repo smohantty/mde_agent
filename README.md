@@ -53,6 +53,15 @@ uv run agent run "Summarize markdown files" --skills-dir demos/basic_demo_skills
 uv run agent run "Summarize markdown files" --skills-dir demos/basic_demo_skills --provider anthropic
 ```
 
+6. Run continuously in interactive CLI mode:
+
+```bash
+uv run agent chat --skills-dir demos/basic_demo_skills --provider anthropic
+```
+
+In `agent chat`, each line is treated as a task. The agent completes the task, keeps session context,
+and waits for the next input. Use `Ctrl+D` to exit.
+
 Run output includes both:
 
 - `events.jsonl` (event stream)
@@ -73,6 +82,7 @@ Skill delegation is optional: the model can return `selected_skill: null` and co
 ## Commands
 
 - `agent run`
+- `agent chat`
 - `agent skills list`
 - `agent skills inspect`
 - `agent replay`

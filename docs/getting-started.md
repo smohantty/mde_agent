@@ -24,6 +24,18 @@ uv run agent run "inventory workspace" --skills-dir demos/basic_demo_skills --dr
 uv run agent run "create a checklist" --skills-dir demos/basic_demo_skills --provider gemini
 ```
 
+## Interactive continuous CLI mode
+
+```bash
+uv run agent chat --skills-dir demos/basic_demo_skills --provider anthropic
+```
+
+In chat mode, each input line is a task. The agent completes it, preserves session context,
+then returns to waiting for your next input.
+
+Use `Ctrl+D` to exit.
+Use `--reload-skills-each-task` if you are editing `SKILL.md` files live and want hot-reload behavior.
+
 ## With MCP support
 
 ```bash

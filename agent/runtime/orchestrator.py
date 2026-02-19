@@ -55,6 +55,15 @@ class RunResult:
 
 
 @dataclass
+class PreparedSkillsContext:
+    resolved_skills_dir: Path
+    skills: list[Any]
+    skill_action_aliases: dict[str, dict[str, str]]
+    skill_default_action_params: dict[str, dict[str, dict[str, Any]]]
+    all_skill_frontmatter: list[dict[str, Any]]
+
+
+@dataclass
 class LlmInvocationContext:
     turn_index: int
     call_site: LlmCallSite
@@ -76,6 +85,20 @@ class LlmInvocationResult:
 class Orchestrator:
     def __init__(self, config: AgentConfig) -> None:
         self.config = config
+
+    def prepare_skills(self, skills_dir: Path) -> PreparedSkillsContext:
+        resolved_skills_dir = skills_dir.resolve()
+        registry = SkillRegistry(resolved_skills_dir)
+        skills = registry.load()
+        skill_action_aliases, skill_default_action_params = self._build_decoder_overrides(skills)
+        all_skill_frontmatter = self._build_prompt_skill_catalog(skills)
+        return PreparedSkillsContext(
+            resolved_skills_dir=resolved_skills_dir,
+            skills=skills,
+            skill_action_aliases=skill_action_aliases,
+            skill_default_action_params=skill_default_action_params,
+            all_skill_frontmatter=all_skill_frontmatter,
+        )
 
     @staticmethod
     def _sanitize_and_redact(text: str | None) -> str | None:
@@ -1075,6 +1098,8 @@ class Orchestrator:
         dry_run: bool = False,
         max_turns_override: int | None = None,
         on_event: Callable[[EventRecord], None] | None = None,
+        session_context: list[dict[str, Any]] | None = None,
+        prepared_skills: PreparedSkillsContext | None = None,
     ) -> RunResult:
         run_id = generate_run_id()
         trace_id = uuid.uuid4().hex
@@ -1119,12 +1144,40 @@ class Orchestrator:
             },
         )
 
-        registry = SkillRegistry(skills_dir)
-        skills = registry.load()
-        skill_action_aliases, skill_default_action_params = self._build_decoder_overrides(skills)
-        all_skill_frontmatter = self._build_prompt_skill_catalog(skills)
+        resolved_skills_dir = skills_dir.resolve()
+        registry = SkillRegistry(resolved_skills_dir)
+        loaded_from_cache = False
+        skills_context = prepared_skills
+        if (
+            skills_context is not None
+            and skills_context.resolved_skills_dir != resolved_skills_dir
+        ):
+            prepared_skills_dir = skills_context.resolved_skills_dir
+            skills_context = None
+            bus.emit(
+                "prepared_skills_ignored",
+                {
+                    "reason": "skills_dir_mismatch",
+                    "prepared_skills_dir": str(prepared_skills_dir),
+                    "requested_skills_dir": str(resolved_skills_dir),
+                },
+            )
+        if skills_context is None:
+            skills_context = self.prepare_skills(resolved_skills_dir)
+        else:
+            loaded_from_cache = True
+
+        skills = skills_context.skills
+        skill_action_aliases = skills_context.skill_action_aliases
+        skill_default_action_params = skills_context.skill_default_action_params
+        all_skill_frontmatter = skills_context.all_skill_frontmatter
         bus.emit(
-            "skill_catalog_loaded", {"skills_count": len(skills), "skills_dir": str(skills_dir)}
+            "skill_catalog_loaded",
+            {
+                "skills_count": len(skills),
+                "skills_dir": str(skills_context.resolved_skills_dir),
+                "loaded_from_cache": loaded_from_cache,
+            },
         )
         if not skills:
             bus.emit("run_failed", {"reason": "no_skills_found"})
@@ -1231,6 +1284,7 @@ class Orchestrator:
                 step_results=[],
                 max_context_tokens=self.config.model.max_context_tokens,
                 response_headroom_tokens=self.config.model.response_headroom_tokens,
+                session_context=session_context,
                 use_native_tools=dry_run_native_tools,
                 mcp_tools=mcp_tool_catalog or None,
             )
@@ -1325,6 +1379,7 @@ class Orchestrator:
                     all_skill_frontmatter=all_skill_frontmatter,
                     disclosed_snippets=disclosed_snippets,
                     step_results=accumulated_results,
+                    session_context=session_context,
                     blocked_skill_name=blocked_self_handoff_skill,
                     max_context_tokens=self.config.model.max_context_tokens,
                     response_headroom_tokens=self.config.model.response_headroom_tokens,
@@ -1408,6 +1463,7 @@ class Orchestrator:
                         all_skill_frontmatter=all_skill_frontmatter,
                         disclosed_snippets=disclosed_snippets,
                         step_results=accumulated_results,
+                        session_context=session_context,
                         blocked_skill_name=blocked_self_handoff_skill,
                         max_context_tokens=self.config.model.max_context_tokens,
                         response_headroom_tokens=(

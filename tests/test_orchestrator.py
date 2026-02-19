@@ -7,6 +7,7 @@ from agent.config import AgentConfig
 from agent.llm.base_client import LlmResult
 from agent.llm.provider_router import ProviderRouter
 from agent.runtime.orchestrator import Orchestrator
+from agent.skills.registry import SkillRegistry
 from agent.types import LlmRequestMeta
 
 
@@ -52,6 +53,32 @@ def test_orchestrator_dry_run(tmp_path: Path) -> None:
         encoding="utf-8"
     )
     assert "run_finished" in events
+
+
+def test_orchestrator_uses_prepared_skills_without_registry_reload(
+    tmp_path: Path, monkeypatch
+) -> None:
+    skills_dir = tmp_path / "skills"
+    _create_demo_skill(skills_dir)
+
+    cfg = AgentConfig()
+    cfg.logging.jsonl_dir = str(tmp_path / "runs")
+    orchestrator = Orchestrator(cfg)
+    prepared = orchestrator.prepare_skills(skills_dir)
+
+    def _fail_load(self) -> list[object]:
+        raise AssertionError(
+            "SkillRegistry.load should not be called when prepared_skills is provided"
+        )
+
+    monkeypatch.setattr(SkillRegistry, "load", _fail_load)
+    result = orchestrator.run(
+        task="inventory files",
+        skills_dir=skills_dir,
+        dry_run=True,
+        prepared_skills=prepared,
+    )
+    assert result.status == "success"
 
 
 def test_orchestrator_missing_key_fails_fast(tmp_path: Path, monkeypatch) -> None:

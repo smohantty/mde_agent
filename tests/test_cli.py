@@ -7,7 +7,7 @@ import yaml
 from typer.testing import CliRunner
 
 from agent.cli import app
-from agent.runtime.orchestrator import Orchestrator, RunResult
+from agent.runtime.orchestrator import Orchestrator, PreparedSkillsContext, RunResult
 
 
 def test_run_prints_llm_transcript_path(monkeypatch, tmp_path: Path) -> None:
@@ -75,3 +75,92 @@ def test_replay_with_llm_transcript(monkeypatch, tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "=== LLM ATTEMPT START ===" in result.output
     assert "Response Kind: tool_call" in result.output
+
+
+def test_chat_reuses_prepared_skills_and_carries_session_context(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    prepare_calls: list[Path] = []
+    run_calls: list[dict[str, object]] = []
+
+    def _fake_prepare(self, skills_dir: Path) -> PreparedSkillsContext:
+        prepare_calls.append(skills_dir)
+        return PreparedSkillsContext(
+            resolved_skills_dir=skills_dir.resolve(),
+            skills=[],
+            skill_action_aliases={},
+            skill_default_action_params={},
+            all_skill_frontmatter=[],
+        )
+
+    def _fake_run(self, *args, **kwargs) -> RunResult:
+        run_index = len(run_calls) + 1
+        run_calls.append(
+            {
+                "task": kwargs.get("task"),
+                "session_context": kwargs.get("session_context"),
+                "prepared_skills": kwargs.get("prepared_skills"),
+            }
+        )
+        return RunResult(
+            run_id=f"run-{run_index}",
+            status="success",
+            message=f"done-{run_index}",
+            events_path=tmp_path / "runs" / f"run-{run_index}" / "events.jsonl",
+            llm_transcript_path=tmp_path / "runs" / f"run-{run_index}" / "llm_transcript.log",
+        )
+
+    monkeypatch.setattr(Orchestrator, "prepare_skills", _fake_prepare)
+    monkeypatch.setattr(Orchestrator, "run", _fake_run)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["chat", "--skills-dir", "./skills"],
+        input="first task\nsecond task\n",
+    )
+    assert result.exit_code == 0
+    assert len(prepare_calls) == 1
+    assert len(run_calls) == 2
+    assert run_calls[0]["session_context"] == []
+    second_context = run_calls[1]["session_context"]
+    assert isinstance(second_context, list)
+    assert second_context
+    assert second_context[0]["task"] == "first task"
+
+
+def test_chat_reload_skills_each_task(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    prepare_calls: list[Path] = []
+
+    def _fake_prepare(self, skills_dir: Path) -> PreparedSkillsContext:
+        prepare_calls.append(skills_dir)
+        return PreparedSkillsContext(
+            resolved_skills_dir=skills_dir.resolve(),
+            skills=[],
+            skill_action_aliases={},
+            skill_default_action_params={},
+            all_skill_frontmatter=[],
+        )
+
+    def _fake_run(self, *args, **kwargs) -> RunResult:
+        run_index = len(prepare_calls)
+        return RunResult(
+            run_id=f"run-{run_index}",
+            status="success",
+            message="ok",
+            events_path=tmp_path / "runs" / f"run-{run_index}" / "events.jsonl",
+        )
+
+    monkeypatch.setattr(Orchestrator, "prepare_skills", _fake_prepare)
+    monkeypatch.setattr(Orchestrator, "run", _fake_run)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["chat", "--skills-dir", "./skills", "--reload-skills-each-task"],
+        input="task one\ntask two\n",
+    )
+    assert result.exit_code == 0
+    assert len(prepare_calls) == 2

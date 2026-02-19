@@ -23,6 +23,7 @@ def build_prompt(
     step_results: list[StepExecutionResult],
     max_context_tokens: int,
     response_headroom_tokens: int,
+    session_context: list[dict[str, Any]] | None = None,
     blocked_skill_name: str | None = None,
     use_native_tools: bool = False,
     mcp_tools: list[dict[str, Any]] | None = None,
@@ -92,6 +93,11 @@ def build_prompt(
                 instruction,
                 f"TASK:\n{task}",
                 f"RUN_STATE:\n{json.dumps(run_state, ensure_ascii=True)}",
+                (
+                    f"SESSION_CONTEXT:\n{json.dumps(session_context, ensure_ascii=True)}"
+                    if session_context
+                    else ""
+                ),
                 (
                     f"RUN_CONSTRAINTS:\n{json.dumps(run_constraints, ensure_ascii=True)}"
                     if run_constraints

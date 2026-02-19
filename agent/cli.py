@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
 
@@ -15,7 +16,8 @@ from agent.config import (
     load_config,
     write_default_config,
 )
-from agent.runtime.orchestrator import Orchestrator
+from agent.runtime.chat_session import ChatSessionMemory
+from agent.runtime.orchestrator import Orchestrator, RunResult
 from agent.skills.registry import SkillRegistry
 from agent.types import EventRecord
 
@@ -35,30 +37,7 @@ def _load_config_or_exit(config_path: Path | None) -> AgentConfig:
         raise typer.Exit(code=1) from exc
 
 
-@app.command("run")
-def run_command(
-    task: Annotated[str, typer.Argument(help="Task to execute")],
-    skills_dir: Annotated[Path, typer.Option(help="Skills directory path")] = Path("./skills"),
-    profile: Annotated[str, typer.Option(help="Runtime profile")] = "permissive",
-    provider: Annotated[
-        str | None, typer.Option(help="Provider override: anthropic|gemini")
-    ] = None,
-    debug_llm: Annotated[bool, typer.Option(help="Capture full prompt/response artifacts")] = False,
-    dry_run: Annotated[
-        bool, typer.Option(help="Only prefilter/disclose/build prompt, no LLM or command execution")
-    ] = False,
-    show_progress: Annotated[
-        bool, typer.Option(help="Show concise progress while the agent executes")
-    ] = True,
-    max_turns: Annotated[int | None, typer.Option(help="Override max turn count")] = None,
-    config: Annotated[Path | None, typer.Option(help="Path to config file")] = None,
-) -> None:
-    cfg = _load_config_or_exit(config)
-    cfg.runtime.profile = profile
-    cfg.logging.debug_llm_bodies = debug_llm
-
-    orchestrator = Orchestrator(cfg)
-
+def _build_progress_renderer(show_progress: bool) -> Callable[[EventRecord], None]:
     def _render_progress(event: EventRecord) -> None:
         if not show_progress:
             return
@@ -151,13 +130,57 @@ def run_command(
             else:
                 console.print(f"[green]finished[/green] turn={payload.get('turn_index')}")
 
+    return _render_progress
+
+
+def _print_run_artifacts(result: RunResult) -> None:
+    console.print(f"Events: {result.events_path}")
+    if result.llm_transcript_path is not None:
+        console.print(f"LLM Transcript: {result.llm_transcript_path}")
+    if result.final_summary_path is not None:
+        console.print(f"Final Summary: {result.final_summary_path}")
+
+
+def _session_summary_text(result: RunResult) -> str:
+    if result.final_summary_path is not None and result.final_summary_path.exists():
+        summary = result.final_summary_path.read_text(encoding="utf-8").strip()
+        if summary:
+            return summary
+    return result.message
+
+
+@app.command("run")
+def run_command(
+    task: Annotated[str, typer.Argument(help="Task to execute")],
+    skills_dir: Annotated[Path, typer.Option(help="Skills directory path")] = Path("./skills"),
+    profile: Annotated[str, typer.Option(help="Runtime profile")] = "permissive",
+    provider: Annotated[
+        str | None, typer.Option(help="Provider override: anthropic|gemini")
+    ] = None,
+    debug_llm: Annotated[bool, typer.Option(help="Capture full prompt/response artifacts")] = False,
+    dry_run: Annotated[
+        bool, typer.Option(help="Only prefilter/disclose/build prompt, no LLM or command execution")
+    ] = False,
+    show_progress: Annotated[
+        bool, typer.Option(help="Show concise progress while the agent executes")
+    ] = True,
+    max_turns: Annotated[int | None, typer.Option(help="Override max turn count")] = None,
+    config: Annotated[Path | None, typer.Option(help="Path to config file")] = None,
+) -> None:
+    cfg = _load_config_or_exit(config)
+    cfg.runtime.profile = profile
+    cfg.logging.debug_llm_bodies = debug_llm
+
+    orchestrator = Orchestrator(cfg)
+
+    progress_renderer = _build_progress_renderer(show_progress)
     result = orchestrator.run(
         task=task,
         skills_dir=skills_dir,
         provider_override=provider,
         dry_run=dry_run,
         max_turns_override=max_turns,
-        on_event=_render_progress,
+        on_event=progress_renderer,
     )
 
     if result.status == "success":
@@ -166,11 +189,86 @@ def run_command(
         console.print(f"[red]Run failed:[/red] {result.run_id} - {result.message}")
         raise typer.Exit(code=1)
 
-    console.print(f"Events: {result.events_path}")
-    if result.llm_transcript_path is not None:
-        console.print(f"LLM Transcript: {result.llm_transcript_path}")
-    if result.final_summary_path is not None:
-        console.print(f"Final Summary: {result.final_summary_path}")
+    _print_run_artifacts(result)
+
+
+@app.command("chat")
+def chat_command(
+    skills_dir: Annotated[
+        Path | None, typer.Option(help="Skills directory path override")
+    ] = None,
+    profile: Annotated[str, typer.Option(help="Runtime profile")] = "permissive",
+    provider: Annotated[
+        str | None, typer.Option(help="Provider override: anthropic|gemini")
+    ] = None,
+    debug_llm: Annotated[bool, typer.Option(help="Capture full prompt/response artifacts")] = False,
+    show_progress: Annotated[
+        bool, typer.Option(help="Show concise progress while the agent executes")
+    ] = True,
+    max_turns: Annotated[int | None, typer.Option(help="Override max turn count")] = None,
+    reload_skills_each_task: Annotated[
+        bool, typer.Option(help="Reload skills from disk before every task")
+    ] = False,
+    config: Annotated[Path | None, typer.Option(help="Path to config file")] = None,
+) -> None:
+    cfg = _load_config_or_exit(config)
+    cfg.runtime.profile = profile
+    cfg.logging.debug_llm_bodies = debug_llm
+
+    resolved_skills_dir = skills_dir if skills_dir is not None else Path(cfg.skills.dir)
+    orchestrator = Orchestrator(cfg)
+    session_memory = ChatSessionMemory()
+    progress_renderer = _build_progress_renderer(show_progress)
+
+    prepared_skills = None
+    if not reload_skills_each_task:
+        prepared_skills = orchestrator.prepare_skills(resolved_skills_dir)
+
+    console.print("Interactive chat mode. Enter task text and press Enter.")
+    console.print("Press Ctrl+D to exit.")
+    while True:
+        try:
+            task_text = console.input("agent> ").strip()
+        except EOFError:
+            console.print("Exiting chat.")
+            break
+        except KeyboardInterrupt:
+            console.print("\nExiting chat.")
+            break
+
+        if not task_text:
+            continue
+
+        current_prepared_skills = (
+            orchestrator.prepare_skills(resolved_skills_dir)
+            if reload_skills_each_task
+            else prepared_skills
+        )
+        result = orchestrator.run(
+            task=task_text,
+            skills_dir=resolved_skills_dir,
+            provider_override=provider,
+            max_turns_override=max_turns,
+            on_event=progress_renderer,
+            session_context=session_memory.build_context(),
+            prepared_skills=current_prepared_skills,
+        )
+
+        if result.status == "success":
+            console.print(f"[green]Run completed:[/green] {result.run_id}")
+        else:
+            console.print(f"[red]Run failed:[/red] {result.run_id} - {result.message}")
+        _print_run_artifacts(result)
+
+        session_memory.append(
+            task=task_text,
+            run_id=result.run_id,
+            status=result.status,
+            summary=_session_summary_text(result),
+        )
+
+        if result.message == "Interrupted by signal":
+            raise typer.Exit(code=130)
 
 
 @skills_app.command("list")
