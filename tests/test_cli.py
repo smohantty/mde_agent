@@ -101,6 +101,8 @@ def test_chat_reuses_prepared_skills_and_carries_session_context(
                 "task": kwargs.get("task"),
                 "session_context": kwargs.get("session_context"),
                 "prepared_skills": kwargs.get("prepared_skills"),
+                "run_id_override": kwargs.get("run_id_override"),
+                "artifact_prefix": kwargs.get("artifact_prefix"),
             }
         )
         return RunResult(
@@ -128,6 +130,8 @@ def test_chat_reuses_prepared_skills_and_carries_session_context(
     assert isinstance(second_context, list)
     assert second_context
     assert second_context[0]["task"] == "first task"
+    assert run_calls[0]["run_id_override"] == run_calls[1]["run_id_override"]
+    assert run_calls[0]["artifact_prefix"] != run_calls[1]["artifact_prefix"]
 
 
 def test_chat_reload_skills_each_task(monkeypatch, tmp_path: Path) -> None:

@@ -417,6 +417,7 @@ class Orchestrator:
         turn_index: int,
         bus: EventBus,
         transcript_sink: LlmTranscriptSink | None,
+        artifact_prefix: str | None = None,
     ) -> str | None:
         evidence = self._collect_tool_evidence(step_results)
         if not evidence:
@@ -443,7 +444,10 @@ class Orchestrator:
         )
         write_artifact(
             run_dir,
-            f"artifacts/final_answer_prompt_turn_{turn_index}.txt",
+            self._artifact_path(
+                f"artifacts/final_answer_prompt_turn_{turn_index}.txt",
+                artifact_prefix,
+            ),
             prompt,
         )
         estimated_input_tokens = estimate_tokens(prompt)
@@ -484,6 +488,7 @@ class Orchestrator:
             context=invocation_context,
             bus=bus,
             transcript_sink=transcript_sink,
+            artifact_prefix=artifact_prefix,
         )
         response_data = invocation_result.response_data
 
@@ -504,7 +509,10 @@ class Orchestrator:
         response_text = self._serialize_response_payload(response_data) or ""
         write_artifact(
             run_dir,
-            f"artifacts/final_answer_response_turn_{turn_index}.txt",
+            self._artifact_path(
+                f"artifacts/final_answer_response_turn_{turn_index}.txt",
+                artifact_prefix,
+            ),
             response_text,
         )
         transcript_response_text = self._sanitize_and_redact(response_text)
@@ -614,6 +622,15 @@ class Orchestrator:
             },
         )
 
+    @staticmethod
+    def _artifact_path(filename: str, artifact_prefix: str | None = None) -> str:
+        if not artifact_prefix:
+            return filename
+        if "/" not in filename:
+            return f"{artifact_prefix}{filename}"
+        parent, leaf = filename.rsplit("/", 1)
+        return f"{parent}/{artifact_prefix}{leaf}"
+
     def _write_transcript(
         self,
         *,
@@ -644,10 +661,14 @@ class Orchestrator:
         attempt: int,
         kind: str,
         content: str,
+        artifact_prefix: str | None = None,
     ) -> None:
         write_artifact(
             run_dir,
-            f"artifacts/llm/{call_site}_turn_{turn_index}_attempt_{attempt}_{kind}.txt",
+            self._artifact_path(
+                f"artifacts/llm/{call_site}_turn_{turn_index}_attempt_{attempt}_{kind}.txt",
+                artifact_prefix,
+            ),
             content,
         )
 
@@ -665,6 +686,7 @@ class Orchestrator:
         transcript_sink: LlmTranscriptSink | None,
         tools: list[dict[str, Any]] | None = None,
         force_tool_use: bool = False,
+        artifact_prefix: str | None = None,
     ) -> LlmInvocationResult:
         response_data: dict[str, Any] | str | None = None
         llm_meta: dict[str, Any] | None = None
@@ -693,6 +715,7 @@ class Orchestrator:
                 attempt=attempt,
                 kind="request",
                 content=raw_request_text,
+                artifact_prefix=artifact_prefix,
             )
             bus.emit(
                 "llm_request_sent",
@@ -735,6 +758,7 @@ class Orchestrator:
                     attempt=attempt,
                     kind="response",
                     content=response_text or "",
+                    artifact_prefix=artifact_prefix,
                 )
                 return LlmInvocationResult(
                     response_data=response_data,
@@ -827,6 +851,7 @@ class Orchestrator:
         run_dir: Path,
         turn_index: int,
         mcp_manager: Any | None = None,
+        artifact_prefix: str | None = None,
     ) -> tuple[list[StepExecutionResult], bool]:
         step_results: list[StepExecutionResult] = []
         should_finish = False
@@ -909,14 +934,20 @@ class Orchestrator:
                 status = "success" if execution.exit_code == 0 else "failed"
                 stdout_artifact = write_artifact(
                     run_dir,
-                    f"artifacts/turn_{turn_index}_{step_id}_stdout.txt",
+                    self._artifact_path(
+                        f"artifacts/turn_{turn_index}_{step_id}_stdout.txt",
+                        artifact_prefix,
+                    ),
                     execution.stdout,
                 )
                 stderr_artifact: Path | None = None
                 if execution.stderr:
                     stderr_artifact = write_artifact(
                         run_dir,
-                        f"artifacts/turn_{turn_index}_{step_id}_stderr.txt",
+                        self._artifact_path(
+                            f"artifacts/turn_{turn_index}_{step_id}_stderr.txt",
+                            artifact_prefix,
+                        ),
                         execution.stderr,
                     )
                 result = StepExecutionResult(
@@ -1042,7 +1073,10 @@ class Orchestrator:
                 mcp_exit = 1 if mcp_result.is_error else 0
                 mcp_artifact = write_artifact(
                     run_dir,
-                    f"artifacts/turn_{turn_index}_{step_id}_mcp_stdout.txt",
+                    self._artifact_path(
+                        f"artifacts/turn_{turn_index}_{step_id}_mcp_stdout.txt",
+                        artifact_prefix,
+                    ),
                     mcp_result.raw_text,
                 )
                 step_results.append(
@@ -1100,8 +1134,10 @@ class Orchestrator:
         on_event: Callable[[EventRecord], None] | None = None,
         session_context: list[dict[str, Any]] | None = None,
         prepared_skills: PreparedSkillsContext | None = None,
+        run_id_override: str | None = None,
+        artifact_prefix: str | None = None,
     ) -> RunResult:
-        run_id = generate_run_id()
+        run_id = run_id_override or generate_run_id()
         trace_id = uuid.uuid4().hex
         run_dir = create_run_dir(Path(self.config.logging.jsonl_dir), run_id)
         sink = JsonlSink(run_dir / "events.jsonl")
@@ -1305,7 +1341,11 @@ class Orchestrator:
                     "estimated_input_tokens": prompt_data.estimated_input_tokens,
                 },
             )
-            write_artifact(run_dir, "dry_run_prompt.txt", prompt_data.prompt)
+            write_artifact(
+                run_dir,
+                self._artifact_path("dry_run_prompt.txt", artifact_prefix),
+                prompt_data.prompt,
+            )
             bus.emit("run_finished", {"mode": "dry_run"})
             return RunResult(
                 run_id=run_id,
@@ -1441,6 +1481,7 @@ class Orchestrator:
                     transcript_sink=transcript_sink,
                     tools=decision_tools,
                     force_tool_use=force_tool_use,
+                    artifact_prefix=artifact_prefix,
                 )
 
                 # Request-level fallback: if native tool request failed
@@ -1482,6 +1523,7 @@ class Orchestrator:
                         context=invocation_context,
                         bus=bus,
                         transcript_sink=transcript_sink,
+                        artifact_prefix=artifact_prefix,
                     )
 
                 llm_response_data = invocation_result.response_data
@@ -1650,6 +1692,7 @@ class Orchestrator:
                     run_dir=run_dir,
                     turn_index=turn_index,
                     mcp_manager=mcp_manager,
+                    artifact_prefix=artifact_prefix,
                 )
                 accumulated_results.extend(step_results)
                 bus.emit(
@@ -1723,6 +1766,7 @@ class Orchestrator:
                         turn_index=turn_index,
                         bus=bus,
                         transcript_sink=transcript_sink,
+                        artifact_prefix=artifact_prefix,
                     )
                     if synthesized_summary:
                         final_summary = synthesized_summary
@@ -1733,7 +1777,7 @@ class Orchestrator:
                         run_finished_payload["final_summary"] = summarize_text(final_summary, 1000)
                         final_summary_path = write_artifact(
                             run_dir,
-                            "final_summary.md",
+                            self._artifact_path("final_summary.md", artifact_prefix),
                             f"# Final Summary\n\n{final_summary.strip()}\n",
                         )
                         run_finished_payload["final_summary_artifact"] = str(final_summary_path)

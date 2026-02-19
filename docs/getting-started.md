@@ -35,6 +35,7 @@ then returns to waiting for your next input.
 
 Use `Ctrl+D` to exit.
 Use `--reload-skills-each-task` if you are editing `SKILL.md` files live and want hot-reload behavior.
+By default, one chat session uses one run id and appends logs/artifacts under that shared run folder.
 
 ## With MCP support
 

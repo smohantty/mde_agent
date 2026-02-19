@@ -81,6 +81,38 @@ def test_orchestrator_uses_prepared_skills_without_registry_reload(
     assert result.status == "success"
 
 
+def test_orchestrator_appends_to_shared_run_dir_with_artifact_prefixes(tmp_path: Path) -> None:
+    skills_dir = tmp_path / "skills"
+    _create_demo_skill(skills_dir)
+
+    cfg = AgentConfig()
+    cfg.logging.jsonl_dir = str(tmp_path / "runs")
+    orchestrator = Orchestrator(cfg)
+
+    first = orchestrator.run(
+        task="task one",
+        skills_dir=skills_dir,
+        dry_run=True,
+        run_id_override="chat-session-run",
+        artifact_prefix="task_0001_",
+    )
+    second = orchestrator.run(
+        task="task two",
+        skills_dir=skills_dir,
+        dry_run=True,
+        run_id_override="chat-session-run",
+        artifact_prefix="task_0002_",
+    )
+
+    assert first.run_id == "chat-session-run"
+    assert second.run_id == "chat-session-run"
+    run_dir = Path(cfg.logging.jsonl_dir) / "chat-session-run"
+    assert (run_dir / "task_0001_dry_run_prompt.txt").exists()
+    assert (run_dir / "task_0002_dry_run_prompt.txt").exists()
+    events = (run_dir / "events.jsonl").read_text(encoding="utf-8")
+    assert events.count('"event_type": "run_started"') == 2
+
+
 def test_orchestrator_missing_key_fails_fast(tmp_path: Path, monkeypatch) -> None:
     skills_dir = tmp_path / "skills"
     _create_demo_skill(skills_dir)

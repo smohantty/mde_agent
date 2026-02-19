@@ -36,6 +36,7 @@ uv run agent config validate --file agent.yaml
 - Chat mode carries session context across tasks using rolling summaries.
 - By default, skills are parsed once at chat startup for performance.
 - Use `agent chat --reload-skills-each-task` to reparse skills before every task (useful while editing skills live).
+- One chat session uses one run id and appends all per-task logs into the same run directory.
 
 ## See also
 

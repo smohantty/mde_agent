@@ -61,6 +61,8 @@ uv run agent chat --skills-dir demos/basic_demo_skills --provider anthropic
 
 In `agent chat`, each line is treated as a task. The agent completes the task, keeps session context,
 and waits for the next input. Use `Ctrl+D` to exit.
+All tasks in one chat session share a single run id and append into the same `events.jsonl` and
+`llm_transcript.log` with task-prefixed artifacts.
 
 Run output includes both:
 

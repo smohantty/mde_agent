@@ -19,6 +19,7 @@ from agent.config import (
 from agent.runtime.chat_session import ChatSessionMemory
 from agent.runtime.orchestrator import Orchestrator, RunResult
 from agent.skills.registry import SkillRegistry
+from agent.storage.run_store import generate_run_id
 from agent.types import EventRecord
 
 app = typer.Typer(help="Autonomous skill-native agent")
@@ -50,7 +51,11 @@ def _build_progress_renderer(show_progress: bool) -> Callable[[EventRecord], Non
         elif et == "skill_catalog_loaded":
             loaded = payload.get("skills_count")
             skills_dir_label = payload.get("skills_dir")
-            console.print(f"[cyan]skills[/cyan] loaded={loaded} dir={skills_dir_label}")
+            loaded_from_cache = payload.get("loaded_from_cache")
+            cache_label = "cache" if loaded_from_cache else "disk"
+            console.print(
+                f"[cyan]skills[/cyan] loaded={loaded} dir={skills_dir_label} source={cache_label}"
+            )
         elif et == "skill_prefilter_completed":
             candidates = payload.get("candidates", [])
             top = candidates[0]["skill_name"] if candidates else "none"
@@ -223,8 +228,11 @@ def chat_command(
     prepared_skills = None
     if not reload_skills_each_task:
         prepared_skills = orchestrator.prepare_skills(resolved_skills_dir)
+    session_run_id = generate_run_id()
+    task_index = 0
 
     console.print("Interactive chat mode. Enter task text and press Enter.")
+    console.print(f"Session run id: {session_run_id}")
     console.print("Press Ctrl+D to exit.")
     while True:
         try:
@@ -239,6 +247,8 @@ def chat_command(
         if not task_text:
             continue
 
+        task_index += 1
+        task_artifact_prefix = f"task_{task_index:04d}_"
         current_prepared_skills = (
             orchestrator.prepare_skills(resolved_skills_dir)
             if reload_skills_each_task
@@ -252,6 +262,8 @@ def chat_command(
             on_event=progress_renderer,
             session_context=session_memory.build_context(),
             prepared_skills=current_prepared_skills,
+            run_id_override=session_run_id,
+            artifact_prefix=task_artifact_prefix,
         )
 
         if result.status == "success":
